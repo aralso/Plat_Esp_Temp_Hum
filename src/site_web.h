@@ -288,11 +288,13 @@ const char index_html[] PROGMEM = R"rawliteral(
                   8 : Skip graph : 1 valeur sur X<br>
                   9 : Seuil batt sonde<br>
                   10: Freq Log batterie(jours)<br>
-                  12 : temps éveillé (sec) (sonde)<br>
                   13 : activation OTA<br>
                   14 : pause entre detections (sec)<br>
                   15 : seuil bas arret ESP<br>
-                  40 : activ esp_now<br>4-1
+                  16 : duree allumage (sec)<br>
+                  17 : action : stockage<br>
+                  18 : action : envoi<br>
+                  40 : activ esp_now<br>
                   41 : canal wifi <br>
                   42 : canal wifi prérentiel (sonde)<br>
                   43 : puissance wifi<br>
@@ -334,9 +336,9 @@ const char index_html[] PROGMEM = R"rawliteral(
                   8 : websocket On (1-2)<br>
                   9 : websocket<br>
                   10 : websock id<br>
-                  11 : adresse Mac<br>
+                  11 : (L)adresse Mac module<br>
+                  12 : adresse Mac dest<br>
     
-
 
             <div>
             <h1>Log erreurs: 1(Tint) 2(Text) 3(heure)..</h1>
@@ -432,17 +434,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           CoutV:5,
       };
 
-      const NB_CYCLES = 12;
-      let html = "";
-
-      for (let i = 0; i < NB_CYCLES; i++) {
-        html += `
-          <tr>
-            <td>${(i+1) * 5} min</td>
-            <td><span id="NbPi${i}" class="default-action"></span></td>
-          </tr>`;
-      }
-      document.getElementById("cycle_table").innerHTML += html;
 
       
       const updateValue = (el, value, updateRemote) => {   // mise à jour de la valeur sur la page web
@@ -883,6 +874,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       function f(num, x) {
         var y = (graphique[num + dataOffset][x]) / divider;
+        if ((num == 2) || (num==5))  y = y/10; // pour les humidite, on divise par 100
         return (y);
       }
 

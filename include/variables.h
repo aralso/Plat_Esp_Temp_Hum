@@ -6,7 +6,7 @@
 // variables externes
 
 
-#define ESP_TJ_ACTIF      // Rôle principal 
+#define ESP_VEILLE     // Rôle principal 
 //#define ESP_VEILLE  // Rôle distant : envoi data
 
 // Hardware
@@ -17,13 +17,16 @@
 
 #ifdef ESP_VEILLE
   //#define ESP32_Fire2
-  #define ESP32_uPesy
+  //#define ESP32_uPesy
+  #define ESP32_S3
+
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
   #define MODE_Wifi  // Wifi sinon Ethernet
   //#define Sans_securite
   #define Sans_websocket
   #define OTA
-  #define CLASS_A
+  #define ENVOI
+  #define STOCKAGE
 #endif
 
 #ifdef ESP_TJ_ACTIF  // Chaudiere
@@ -183,11 +186,16 @@ void traitement_rx(UartMessage_t* mess);
 uint8_t requete_Get_appli(const char* var, float* valeur);
 uint8_t requete_Set_appli(String param, float valf);
 uint8_t requete_GetReg(int reg, float* valeur);
+void  activation_writelog();
+void     setup_nvs_rtc();
+void enreg_24h( uint8_t veille);
+void printMemoryStatus();
 
 
 void passage_deep_sleep(uint64_t temps);
 
 extern float Vbatt_ESP;   // Tension batterie ESP
+extern struct tm timeinfo;
 
 
 typedef enum {
@@ -212,15 +220,6 @@ typedef struct {
   uint32_t data;            // Donnée associée (ex: valeur capteur, byte UART)
 } systeme_eve_t;
 
-// planning
-#define NB_MAX_PGM 3
-typedef struct {
-  uint8_t ch_debut;       // debut de chauffe :heure par pas de 10 minutes
-  uint8_t ch_fin;         // fin de chauffe
-  uint8_t ch_type;        // 0:tous les jours, 1:semaine, 2:week-end (2 bits)
-  uint8_t ch_consigne;    // 5° à 23°C, par pas de 0,1°C
-  uint8_t ch_cons_apres;  // 3° à 23°C, par pas de 0,5°C (6 bits)
-} planning_t;
 
 /* Codes erreur*/
 #define Code_erreur_Tint 1
@@ -272,25 +271,26 @@ extern volatile int ackChannel;       // canal où ça a marché
 extern uint8_t mode_reseau;
 extern uint8_t init_time;
 extern float heure;
-extern uint8_t skip_graph;
+extern RTC_DATA_ATTR uint8_t skip_graph;
 
 extern unsigned long last_remote_Tint_time, last_remote_Text_time,
     last_remote_heure_time;
-extern uint16_t err_Tint, err_Text, err_Heure;
+extern RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;
 
-extern float tempI_moy24h, tempE_moy24h, Hum_24h;
-extern uint8_t cpt24_Tint, cpt24_Text, cpt24_Hum;
+extern RTC_DATA_ATTR float tempI_moy24h, tempE_moy24h, Hum_24h;
+extern RTC_DATA_ATTR uint8_t cpt24_Tint, cpt24_Text, cpt24_Hum;
 
 extern char mdp_routeur[];
-extern int16_t graphique[NB_Val_Graph][NB_Graphique];
+extern RTC_DATA_ATTR int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_sonde;  // millivolt
 extern uint16_t Seuil_batt_arret_ESP;  // millivolt
+extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par bouton_reveil 3:reveil par PIR
 
 
 extern RTC_DATA_ATTR uint8_t etat_now;
-extern uint8_t Nb_jours_Batt_log;
+extern RTC_DATA_ATTR uint8_t Nb_jours_Batt_log;
 
-extern volatile bool force_stay_awake;
+extern  bool force_stay_awake;
 extern unsigned long wake_up_time;  // Temps de réveil/dernière activité
 
 void writeLog(uint8_t code, uint8_t c1, uint8_t c2, uint8_t c3,

@@ -33,25 +33,29 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
 
 // variables Detection PIR
-uint16_t compteur_detection=0;
-uint16_t compteur_detection_1h=0;
+RTC_DATA_ATTR uint16_t compteur_detection=0;
+RTC_DATA_ATTR uint16_t compteur_detection_1h=0;
 
-uint8_t pause_detection;
-unsigned long last_detection_time=0;
+RTC_DATA_ATTR uint8_t pause_detection;
+RTC_DATA_ATTR unsigned long last_detection_time=0;
 
-uint16_t Nb_PI[NB_VAL_TAB];
+RTC_DATA_ATTR uint16_t Nb_PI[NB_VAL_TAB];
 
-uint8_t  WIFI_CHANNEL;
+RTC_DATA_ATTR uint8_t  WIFI_CHANNEL;
 RTC_DATA_ATTR uint8_t etat_now;
-uint16_t Seuil_batt_sonde;  // millivolt
-uint16_t Seuil_batt_arret_ESP;
-uint8_t Nb_jours_Batt_log;
-uint16_t prolong_veille;
+RTC_DATA_ATTR uint16_t Seuil_batt_sonde;  // millivolt
+RTC_DATA_ATTR uint16_t Seuil_batt_arret_ESP;
+RTC_DATA_ATTR uint8_t Nb_jours_Batt_log;
+RTC_DATA_ATTR uint16_t prolong_veille;
+RTC_DATA_ATTR uint8_t action_stockage;
+RTC_DATA_ATTR uint8_t action_envoi;
 
-uint8_t compteur_graph;
+RTC_DATA_ATTR uint8_t compteur_graph;
+RTC_DATA_ATTR uint16_t compteur_24h;
 
 
-RTC_DATA_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_chaudiere
+
+RTC_DATA_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
 
@@ -82,7 +86,7 @@ DHT dht[] = {
 
 // Temperature intérieure
 float Tint, Text, Humid;
-uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
+RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
 
 
@@ -139,12 +143,29 @@ void setup_0()
   }*/
 }
 
-// setup : lecture nvs
-void setup_nvs()
+// setup : lecture nvs_rtc au power on
+void setup_nvs_rtc()
 {
+  // si rtc non valide, on recharge les valeurs pour rtc, qui doivent rester en RTC_DATA_ATTR
+    action_stockage = preferences_nvs.getUChar("AcSt", 0);
+    if (action_stockage < 2)
+      Serial.printf("Action stockage : %i\n\r", action_stockage);
+    else {
+      action_stockage = 0;
+      preferences_nvs.putUChar("AcSt", 0);
+      Serial.println("Raz action stockage: 0");
+    }
 
-  if (!rtc_valid)  // si le domaine RAM RTC est valide, on ne recharge pas les valeurs de l'eeprom 
-  {
+    action_envoi = preferences_nvs.getUChar("AcEn", 0);
+    if (action_envoi < 2)         
+      Serial.printf("Action envoi : %i\n\r", action_envoi);
+    else {
+      action_envoi = 0;
+      preferences_nvs.putUChar("AcEn", 0);
+      Serial.println("Raz action envoi: 0");
+    }   
+
+
     Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 0);
     if ((!Nb_jours_Batt_log) || (Nb_jours_Batt_log > 15)) {  // 1 à 15
       Nb_jours_Batt_log = 2;  // Freq : tous les2 jours
@@ -201,45 +222,40 @@ void setup_nvs()
     else
       Serial.printf("Mode rapide : %i\n\r", mode_rapide);
 
-    #ifdef ESP_VEILLE
-      // Initialisation variable adresse Mac chaudiere
-      String storedString = preferences_nvs.getString("MacC", "");
+    // Initialisation variable adresse Mac Gateway
+    String storedString = preferences_nvs.getString("MacC", "");
 
-      if (parseMacString(storedString.c_str(), mac_gw))
-      {
-        Serial.printf("MAC chaudiere : %02X:%02X:%02X:%02X:%02X:%02X\n",
-          mac_gw[0], mac_gw[1], mac_gw[2],
-          mac_gw[3], mac_gw[4], mac_gw[5] );
-      }
-      else {  Serial.println("MAC chaudière absente ou invalide");  }
+    if (parseMacString(storedString.c_str(), mac_gw))
+    {
+      Serial.printf("MAC chaudiere : %02X:%02X:%02X:%02X:%02X:%02X\n",
+        mac_gw[0], mac_gw[1], mac_gw[2],
+        mac_gw[3], mac_gw[4], mac_gw[5] );
+    }
+    else {  Serial.println("MAC chaudière absente ou invalide");  }
 
 
-      // Initialisation du channel préférentiel wifi-esp-now
-      WIFI_CHANNEL = preferences_nvs.getUChar("WifiC", 0);
-      if ((WIFI_CHANNEL < 1) || (WIFI_CHANNEL > 13)) {
-        WIFI_CHANNEL = 6;  // 1 à 13
-        preferences_nvs.putUChar("WifiC", WIFI_CHANNEL);
-        Serial.printf("Raz Wifi Channel: %i\n", WIFI_CHANNEL);
-      }
-      else
-        Serial.printf("Wifi channel preferentiel: %i\n", WIFI_CHANNEL);
-      last_wifi_channel = WIFI_CHANNEL;
+    // Initialisation du channel préférentiel wifi-esp-now
+    WIFI_CHANNEL = preferences_nvs.getUChar("WifiC", 0);
+    if ((WIFI_CHANNEL < 1) || (WIFI_CHANNEL > 13)) {
+      WIFI_CHANNEL = 6;  // 1 à 13
+      preferences_nvs.putUChar("WifiC", WIFI_CHANNEL);
+      Serial.printf("Raz Wifi Channel: %i\n", WIFI_CHANNEL);
+    }
+    else
+      Serial.printf("Wifi channel preferentiel: %i\n", WIFI_CHANNEL);
+    last_wifi_channel = WIFI_CHANNEL;
 
-      // Initialisation du temps de reveil pour la sonde, si reveil uart/web
-      prolong_veille = preferences_nvs.getUShort("PVei", 0);
-      if (!prolong_veille) {
-        prolong_veille = 30;
+    // Initialisation du temps de reveil pour la sonde, si reveil uart/web
+    prolong_veille = preferences_nvs.getUShort("PVei", 0);
+    if (prolong_veille>=15 && prolong_veille<=600) {
+      Serial.printf("Temps reveil : %i sec\n", prolong_veille);
+    }
+    else
+    {  
+      prolong_veille = 60;
       preferences_nvs.putUShort("PVei", prolong_veille);
-        Serial.printf("Raz temps reveil : %i sec\n", prolong_veille);
-      }
-      else
-        Serial.printf("Temps reveil : %i sec\n", prolong_veille);
-
-    #endif
-
-  }
-
-  #ifndef ESP_VEILLE
+      Serial.printf("Raz temps reveil : %i sec\n", prolong_veille);
+    }
 
 
     Seuil_batt_sonde = preferences_nvs.getUShort("SeBa", 0);
@@ -251,7 +267,12 @@ void setup_nvs()
     else  Serial.printf("Seuil batterie sonde: %i\n\r", Seuil_batt_sonde);
 
 
-  #endif  // Fin ESP_chaudiere et PAC
+}
+
+// setup : lecture nvs
+void setup_nvs()
+{
+
 
 
 }
@@ -261,6 +282,7 @@ void setup_nvs()
 void setup_1()
 {
 
+    Tint = 15;
     #ifdef Temp_int_HDC1080
 
       #ifdef ESP32_S3
@@ -286,13 +308,10 @@ void setup_1()
     #endif
 
   // initialisation capteur de température intérieur
-  #ifdef ESP_VEILLE
-    Tint = 15;
     #ifdef Temp_int_DHT22
       dht[0].begin();
     #endif
  
-
  
     #ifdef Temp_int_DS18B20
       ds.begin();  // Startup librairie DS18B20
@@ -309,15 +328,15 @@ void setup_1()
     #endif
 
     // lecture initiale temperature interieure
-    uint8_t Tint_err = lecture_Tint(&Tint);
+    /*uint8_t Tint_err = lecture_Tint(&Tint);
     if ((Tint < 1) || (Tint > 45)) {
       Tint = 20.0;
       Tint_err = 7;
     }
     if (Tint_err) log_erreur(Code_erreur_Tint, Tint_err, 1);
     else
-      Serial.printf("Temp int:%.2f\n\r", Tint);
-  #endif
+      Serial.printf("Temp int:%.2f\n\r", Tint);*/
+
 }
 
 // apres demarrage reseau
@@ -355,23 +374,17 @@ void setup_2()
     
     Serial.println("\n\n======================================");
     Serial.println("🔵 ESP-NOW Initialisé (RÉCEPTEUR)");
-    Serial.print("   MAC Address: ");
+    Serial.print("   MAC Address module: ");
     //if ((mode_reseau==13) )
     //else
     //  Serial.println(WiFi.softAPmacAddress());
+    Serial.println(WiFi.macAddress());
 
     // Stockage de l'adresse MAC dans le tableau mac_gw[6]
-    #ifdef ESP_VEILLE
-        Serial.println(WiFi.macAddress());
-    #else
-      String macStr = WiFi.macAddress();
-      sscanf(macStr.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-            &mac_gw[0], &mac_gw[1], &mac_gw[2],
-            &mac_gw[3], &mac_gw[4], &mac_gw[5]);
-      Serial.printf("   MAC : %02X:%02X:%02X:%02X:%02X:%02X\n",
+    Serial.printf("   MAC dest : %02X:%02X:%02X:%02X:%02X:%02X\n",
             mac_gw[0], mac_gw[1], mac_gw[2],
             mac_gw[3], mac_gw[4], mac_gw[5]);
-    #endif
+
 
     Serial.printf("   Canal WiFi: %d\n", current_channel);
     Serial.println("   En attente de messages...");
@@ -483,7 +496,21 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
     res = 0;
     *valeur = Seuil_batt_arret_ESP;
   }
-
+  if (reg == 16)  // registre 16 : duree allumage
+  {
+    res = 0;
+    *valeur = prolong_veille;
+  }
+  if (reg == 17)  // registre 17 : action stockage
+  {
+    res = 0;
+    *valeur = action_stockage;
+  }
+  if (reg == 18)  // registre 18 : action envoi
+  {
+    res = 0;
+    *valeur = action_envoi;
+  }
   if (reg == 40)  // registre 40 : activation esp_now
   {
     res = 0;
@@ -551,6 +578,28 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
       preferences_nvs.putUShort("SeAr", Seuil_batt_arret_ESP);
     }
   }
+  if (param == 16)  // registre 16 : duree allumage
+  {
+    if ((valeur>=15) && (valeur <= 600)) {  // de 15 sec à 10 minutes
+      res = 0;
+      prolong_veille = valeur;
+      preferences_nvs.putUShort("PVei", prolong_veille);
+    }
+  }
+  if (param == 17)  // registre 17 : action stockage
+  {    if ((valeur == 0) || (valeur == 1))
+    {      res = 0;
+      action_stockage = valeur;
+      preferences_nvs.putUChar("AcSt", action_stockage);
+    }
+  }
+  if (param == 18)  // registre 18 : action envoi      
+  {    if ((valeur == 0) || (valeur == 1))
+    {      res = 0;
+      action_envoi = valeur;
+      preferences_nvs.putUChar("AcEn", action_envoi);
+    }
+  }
   if (param == 40)  // registre 40 : activation esp_now
   {
     if ((valeur == 0) || (valeur == 1))
@@ -588,7 +637,12 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
   int paramV = var.toInt();
   // valeur limité a 50 caractères
   
-  if (paramV == 11)  // registre 11 : adresse MAC ESP_Gateway
+  if (paramV == 11)  // registre 11 : adresse MAC ce module
+  {
+    res = 0;
+    strncpy(valeur, WiFi.macAddress().c_str(), 18);
+  }
+  if (paramV == 12)  // registre 12 : adresse MAC destinataire
   {
     res = 0;
     snprintf(valeur, 18,
@@ -599,6 +653,7 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
 
   return res;
 }
+
 
 uint8_t parseMacString(const char* str, uint8_t mac[6]) {
   int v[6];
@@ -616,11 +671,11 @@ uint8_t requete_Set_String_appli(int param, const char *texte)
   uint8_t res=1;
   IPAddress ip;
 
-    if (param == 11)  // registre 11 : adresse Mac chaudiere
+    if (param == 12)  // registre 12 : adresse Mac dest
     {
       if (!parseMacString(texte, mac_gw))
       {
-          Serial.println("MAC chaudière invalide");
+          Serial.println("MAC dest invalide");
       }
       else
       {
@@ -705,6 +760,10 @@ uint8_t lecture_Tint(float *mesure, float*humid)
   if (valeur > 50) Tint_erreur = 2;
   if (valeur < -20) Tint_erreur = 3;
   Serial.printf("lecture Tint : %.2f Err:%i\n\r", valeur, Tint_erreur);
+  if (Tint_erreur) {
+    valeur = 20.0;
+    valeur2 = 50.0;
+  }
   *mesure = valeur;
   *humid = valeur2;
   return Tint_erreur;
@@ -806,13 +865,35 @@ uint8_t fetch_internet_temp() {
   return res;
 }
 
+void envoi_valeur(float Tint, float Humid) {
+  if (esp_now_actif) {
+    Message_EspNow message;
+    message.type = 1; // Type 1 pour température
+    message.valuef = Tint; // Valeur de la température
+
+    esp_err_t result = esp_now_send(mac_gw, (uint8_t *)&message, sizeof(message));
+    if (result == ESP_OK) {
+      Serial.println("✅ Température envoyée par ESP-NOW");
+    } else {
+      Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
+    }
+  }
+}
+
 void event_cycle()  // toutes les 15 minutes 
 {
 
-  #ifdef ESP_TJ_ACTIF
-    // --- MODE CHAUDIERE ---
     // Récupération de la température extérieure par internet
     //fetch_internet_temp();
+
+    // lecture temp-humi
+    uint8_t err_Tint = lecture_Tint(&Tint, &Humid);
+    if (err_Tint)
+      log_erreur(Code_erreur_Tint, err_Tint, 1);
+    else
+      Serial.printf("Temp int:%.2f Humid:%.2f\n\r", Tint, Humid); 
+
+    if (action_envoi) envoi_valeur(Tint, Humid);  // envoi  par ESP-NOW
 
     
     uint8_t i;
@@ -828,7 +909,7 @@ void event_cycle()  // toutes les 15 minutes
       }
       graphique[0][0] = round(Tint * 10);
       graphique[0][1] = round(Text * 10);
-      graphique[0][2] = round(Humid * 10);;  // A partir de 1 pour éviter les valeurs nulles dans le graphique
+      graphique[0][2] = round(Humid * 10);
     }
     tempI_moy24h += Tint;
     cpt24_Tint++;
@@ -837,8 +918,17 @@ void event_cycle()  // toutes les 15 minutes
     Hum_24h += Humid;
     cpt24_Hum++;
 
-    // cout moyen
-  #endif
+    //Serial.printf("fin cycle :reveil:%i cpt:%i %i tint:%i 24h:%i\n\r", type_reveil, compteur_graph, skip_graph, graphique[0][0], compteur_24h);
+    
+    if (type_reveil != 5)      // compteur 24h
+    {
+      compteur_24h++;
+      if (compteur_24h >= 24*60/periode_cycle)  // toutes les 24h
+      {
+        activation_writelog();
+        enreg_24h(1);
+      }
+    }
 }
 
 
