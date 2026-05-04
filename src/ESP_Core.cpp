@@ -232,7 +232,7 @@ const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600 * 1;      // fuseau horaire GMT+1h
 const int daylightOffset_sec = 3600 * 1;  // heure d'été
 struct tm timeinfo;
-uint8_t init_time = 0;  // 0:pas initialisé, 1:à8h, 3:avec internet
+RTC_DATA_ATTR uint8_t init_time = 0;  // 0:pas initialisé, 1:à8h, 3:avec internet 4:manuel
 RTC_DATA_ATTR uint8_t last_wifi_channel; // Mémorisation du canal Wifi en DeepSleep
 RTC_DATA_ATTR uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
 float Vbatt_ESP = 0.0;   // Stockage tension batterie
@@ -331,7 +331,7 @@ AsyncWebServer server(80);
 uint8_t cycle24h;
 RTC_DATA_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0;
 RTC_DATA_ATTR uint8_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0;
-RTC_DATA_ATTR uint8_t TextV=0, TintV=0, HumV=0;   
+RTC_DATA_ATTR uint16_t TextV=0, TintV=0, HumV=0;   
 
 // OTA
 bool otaEnabled = false;
@@ -703,27 +703,32 @@ void uart1Task(void * parameter) {
 void enreg_24h( uint8_t veille)
 {
     // Log toutes les jours/semaines : nb d'erreurs wifi et batteries
-  float vbatt = readBatteryVoltage();
-  if ((Seuil_batt_arret_ESP) && (vbatt < Seuil_batt_arret_ESP) && (vbatt > 2400))
+  if (Nb_jours_Batt_log)
   {
-    writeLog('S', 7, 0, 0, "Batt Stp");
-    etat_ESP_stop = 1;
-  }
-  cpt24h_batt++;
-  if (cpt24h_batt >= Nb_jours_Batt_log)  // log chaque X jour 
-  {
-    cpt24h_batt=0;
+    float vbatt = readBatteryVoltage();
+    Serial.printf("Tension Batterie : %.2f V\n", vbatt);
 
-    //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n", vbatt, Vbatt_Th);
-    if (veille)
+    if ((Seuil_batt_arret_ESP) && (vbatt < Seuil_batt_arret_ESP) && (vbatt > 2400))
     {
-      writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, 0, "24H_Res");
+      writeLog('S', 7, 0, 0, "Batt Stp");
+      etat_ESP_stop = 1;
     }
-    else
+    cpt24h_batt++;
+    if (cpt24h_batt >= Nb_jours_Batt_log)  // log chaque X jour 
     {
-      if (nb_err_reseau>255) nb_err_reseau=255;
-      writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, (uint8_t)nb_err_reseau, "24H_Res");
-      nb_err_reseau=0;
+      cpt24h_batt=0;
+
+      //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n", vbatt, Vbatt_Th);
+      if (veille)
+      {
+        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, 0, "24H_Res");
+      }
+      else
+      {
+        if (nb_err_reseau>255) nb_err_reseau=255;
+        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, (uint8_t)nb_err_reseau, "24H_Res");
+        nb_err_reseau=0;
+      }
     }
   }
 
@@ -742,10 +747,10 @@ void enreg_24h( uint8_t veille)
   err_Heure=0;
 
   // graphique des temperatures quotidiennes
-  uint8_t tempI=1, tempE=1, Hum=1;
-  if (cpt24_Tint)  tempI = (uint8_t)(tempI_moy24h/cpt24_Tint*10);
-  if (cpt24_Text)  tempE = (uint8_t)(tempE_moy24h/cpt24_Text*10);
-  if (cpt24_Hum) Hum = (uint8_t)(Hum_24h/cpt24_Hum*10);
+  uint16_t tempI=1, tempE=1, Hum=1;
+  if (cpt24_Tint)  tempI = (uint16_t)(tempI_moy24h/cpt24_Tint*10);
+  if (cpt24_Text)  tempE = (uint16_t)(tempE_moy24h/cpt24_Text*10);
+  if (cpt24_Hum) Hum = (uint16_t)(Hum_24h/cpt24_Hum*10);
   if (!tempI) tempI=1;  // permet d'afficher quand meme le point sur le graphique
   if (!tempE) tempE=1;  // permet d'afficher quand meme le point sur le graphique
   if (!Hum) Hum=1;  // permet d'afficher quand meme le point sur le graphique
@@ -772,6 +777,7 @@ void enreg_24h( uint8_t veille)
   graphique[0][4] = tempE;
   graphique[0][5] = Hum;  
 
+  Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i\n\r", tempI, tempE, Hum);
   writeLogG('G', tempI, tempE, Hum); // Enregistrment en Flash des 3 valeurs du graphique
 
 
@@ -816,7 +822,7 @@ void taskHandler(void *parameter) {
                       Serial.println("verification de l'heure");
                       // Serial.flush();
                       init_time_ps();
-                      if (init_time==3)  xTimerStop(xTimer_Init,100); // arret
+                      if (init_time>=3)  xTimerStop(xTimer_Init,100); // arret
                     }
                   }
                 }
@@ -832,7 +838,7 @@ void taskHandler(void *parameter) {
                     #endif
 
                     if (force_stay_awake) {
-                        wake_up_time = millis() + 30000; // Prolonger le délai de 30 secondes à partir du moment où le message est reçu
+                        wake_up_time = millis() + 50000; // Prolonger sur réception  message UART
                         Serial.println("Activité UART détectée : prolongation du délai de 30s.");
                     }
                     
@@ -1091,13 +1097,13 @@ void setup()
       }
 
       force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
-      wake_up_time = millis() + 60000; // Prolonger le délai de 40 secondes à partir du moment où le réveil est détecté
+      wake_up_time = millis() + 60000; // Prolonger si Bouton réveil est appuyé
       Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
     }
   }
   else
   {
-      force_stay_awake = true; // Réveil par Cold reset : on reste eveillé 30 secondes
+      force_stay_awake = true; // Réveil par Cold reset : on reste eveillé 50 secondes
       wake_up_time = millis() + 50000;
   }
 
@@ -1198,7 +1204,6 @@ void setup()
 
 
   Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
-  Serial.printf("skip1:%i\n", skip_graph);
   setup_0();   //  --- valeur initiales des graphiques
 
   if (type_reveil>=4) // bouton ou toujours actif
@@ -1672,12 +1677,11 @@ void setup()
   printMemoryStatus();
 
   setup_2();  // Esp_now
-  Serial.printf("skip2:%i\n", skip_graph);
 
   // ------------  Configuration OTA -----------------
 
   #ifdef OTA
-    ArduinoOTA.setHostname("ESP32_PIRa");
+    ArduinoOTA.setHostname("ESP32_Tempa");
     ArduinoOTA.setPassword("Corail2025");
 
     ArduinoOTA.onStart([]() {
@@ -2679,6 +2683,111 @@ uint8_t requete_Set_String(int param, const char *texte)
   return (res+res2-1);
 }
 
+static bool setRtcDateFromNumericValue(int32_t numericDate)
+{
+  if (numericDate < 10100 || numericDate > 311299)
+    return false;
+
+  uint8_t day = numericDate / 10000;
+  uint8_t month = (numericDate / 100) % 100;
+  uint16_t year = 2000 + (numericDate % 100);
+
+  if (month < 1 || month > 12 || day < 1 || day > 31)
+    return false;
+
+  const uint8_t monthDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  uint8_t maxDay = monthDays[month - 1];
+  if (month == 2) {
+    bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    if (leap) {
+      maxDay++;
+    }
+  }
+  if (day > maxDay)
+    return false;
+
+  struct tm localTime;
+  if (!getLocalTime(&localTime, 1000)) {
+    time_t now = time(nullptr);
+    if (now == ((time_t)-1) || localtime_r(&now, &localTime) == NULL) {
+      localTime.tm_hour = 0;
+      localTime.tm_min = 0;
+      localTime.tm_sec = 0;
+    }
+  }
+
+  localTime.tm_mday = day;
+  localTime.tm_mon = month - 1;
+  localTime.tm_year = year - 1900;
+
+  time_t sec = mktime(&localTime);
+  if (sec < 0)
+    return false;
+
+  timeval tv;
+  tv.tv_sec = sec;
+  tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+
+  getLocalTime(&timeinfo, 1000);
+  Serial.printf("RTC date set %02u/%02u/%04u %02u:%02u:%02u\n",
+                day, month, year,
+                localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
+  return true;
+}
+
+static bool setRtcTimeFromNumericValue(int32_t numericTime)
+{
+  if (numericTime < 0 || numericTime > 235959)
+    return false;
+
+  int hours;
+  int minutes;
+  int seconds;
+
+  if (numericTime <= 99) {
+    hours = numericTime;
+    minutes = 0;
+    seconds = 0;
+  } else if (numericTime <= 9999) {
+    hours = numericTime / 100;
+    minutes = numericTime % 100;
+    seconds = 0;
+  } else {
+    seconds = numericTime % 100;
+    minutes = (numericTime / 100) % 100;
+    hours = numericTime / 10000;
+  }
+
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59)
+    return false;
+
+  struct tm localTime;
+  if (!getLocalTime(&localTime, 1000)) {
+    localTime = timeinfo;
+    localTime.tm_sec = 0;
+    localTime.tm_min = 0;
+    localTime.tm_hour = 0;
+  }
+
+  localTime.tm_hour = hours;
+  localTime.tm_min = minutes;
+  localTime.tm_sec = seconds;
+
+  time_t sec = mktime(&localTime);
+  if (sec < 0)
+    return false;
+
+  timeval tv;
+  tv.tv_sec = sec;
+  tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+
+  getLocalTime(&timeinfo, 1000);
+  Serial.printf("RTC time set %02u:%02u:%02u\n", hours, minutes, seconds);
+  return true;
+}
+
 
 // type 2
 uint8_t requete_GetReg(int reg, float *valeur) {
@@ -2756,7 +2865,7 @@ uint8_t requete_GetReg(int reg, float *valeur) {
 // type 2
 uint8_t requete_SetReg(int param, float valeurf)
 {
-  int16_t valeur = int16_t(valeurf);
+  int32_t valeur = int32_t(valeurf);
   uint8_t res = 1;
   uint8_t res2= 1;
 
@@ -2838,6 +2947,44 @@ uint8_t requete_SetReg(int param, float valeurf)
         preferences_nvs.putUChar("Skip", skip_graph);
       }
     }
+
+
+    if (param == 11)  // registre 11 : réglage date numérique ddmmyy
+    {
+      if (setRtcDateFromNumericValue(valeur))
+      {
+        init_time = 4;
+        res = 0;
+      }
+    }
+
+    if (param == 12)  // registre 12 : réglage heure numérique hhmmss/hhmm/hh
+    {
+      if (setRtcTimeFromNumericValue(valeur))
+      {
+        init_time = 4;
+        res = 0;
+      /*  uint8_t hh;
+        uint8_t mm;
+        uint8_t ss;
+        if (valeur <= 99) {
+          hh = valeur;
+          mm = 0;
+          ss = 0;
+        } else if (valeur <= 9999) {
+          hh = valeur / 100;
+          mm = valeur % 100;
+          ss = 0;
+        } else {
+          hh = valeur / 10000;
+          mm = (valeur / 100) % 100;
+          ss = valeur % 100;
+        }
+        heure = hh + (float)mm / 60.0 + (float)ss / 3600.0;
+        //preferences_nvs.putUChar("Heure", hh);*/
+      }
+    }
+
     if (param == 13)  // registre 13 : 
     {
       if (valeur==0)
@@ -2900,7 +3047,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
 {
 
   force_stay_awake = true;
-  wake_up_time = millis() + 40000;
+  wake_up_time = millis() + 60000;  // prolonger si demande page web
 
   // Vérification de sécurité du pointeur
   if (json_response == nullptr) {
@@ -2916,7 +3063,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
 
   #ifdef ESP_VEILLE
     // Attendre au moins 2 secondes
-    if (mill - derniere_lecture < DHT22_MIN_INTERVAL_MS) {
+   /* if (mill - derniere_lecture < DHT22_MIN_INTERVAL_MS) {
       // Utiliser la dernière valeur lue si trop fréquent
       // Tint reste inchangée
     } else {
@@ -2936,7 +3083,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
         }
         lecture_en_cours = false;
       }
-    }
+    }*/
   #endif
 
   uint8_t Tint_erreur=0;
@@ -2981,7 +3128,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
 
   p += sprintf(p, "\"Text\":%.1f,", Text);
   p += sprintf(p, "\"Tint\":%.1f,", Tint);
-  p += sprintf(p, "\"Humid\":%.1f,", Humid*3);
+  p += sprintf(p, "\"Humid\":%.1f,", Humid);
 
 
   uint8_t batSI = 0;
@@ -2991,9 +3138,9 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"batSI\":%i,", batSI);
   p += sprintf(p, "\"batS\":%.2f,", vbatt);
 
-  p += sprintf(p, "\"Hum_V\":%i,", HumV*3); // veille
-  p += sprintf(p, "\"TextV\":%.1f,", TextV);  // Temp ext de la veille
-  p += sprintf(p, "\"TintV\":%.1f,", TintV);  // Temp ext de la veille
+  p += sprintf(p, "\"Hum_V\":%i,", HumV); // veille
+  p += sprintf(p, "\"TextV\":%i,", TextV);  // Temp ext de la veille
+  p += sprintf(p, "\"TintV\":%i,", TintV);  // Temp ext de la veille
   
 
   // Tableaux : E(erreurs) T(temp)
@@ -4152,7 +4299,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
     #ifdef ESP_VEILLE
       // Si une commande /get arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
-      wake_up_time = millis() + 40000;
+      wake_up_time = millis() + 40000;  // prolongation si requete get
       Serial.println("Activité /get détectée : prolongation du délai de 30s.");
     #endif
 
@@ -4214,7 +4361,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
     #ifdef ESP_VEILLE
       // Si une commande /set arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
-      wake_up_time = millis() + 40000;
+      wake_up_time = millis() + 40000;  // prolongation si requete set
       Serial.println("Activité /set détectée : prolongation du délai de 30s.");
     #endif
 

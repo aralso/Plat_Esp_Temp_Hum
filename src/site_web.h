@@ -175,7 +175,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
 
             <div class="input-group">
-                <label for="Tint">Temp Int veille :</label>
+                <label for="TintV">Temp Int veille :</label>
                 <div class="text">
                     <span id="TintV" class="default-action"></span>&deg;C&nbsp&nbsp&nbsp
                 </div>
@@ -260,7 +260,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                       <input id="reg-addr" type="text" minlength="4" maxlength="6" size="6" value="3">
                   </div>
                   <div class="text">
-                      <input id="reg-value" type="text" minlength="4" maxlength="5" size="5" value="128">
+                      <input id="reg-value" type="text" minlength="4" maxlength="6" size="6" value="128">
                   </div>
                   <button class="inline-button" id="set-reg">Set</button>
               </div>
@@ -288,6 +288,8 @@ const char index_html[] PROGMEM = R"rawliteral(
                   8 : Skip graph : 1 valeur sur X<br>
                   9 : Seuil batt sonde<br>
                   10: Freq Log batterie(jours)<br>
+                  11: réglage date<br>
+                  12: réglage heure<br>
                   13 : activation OTA<br>
                   14 : pause entre detections (sec)<br>
                   15 : seuil bas arret ESP<br>
@@ -432,6 +434,9 @@ const char index_html[] PROGMEM = R"rawliteral(
           LRTT:60,
           TextV:10,
           CoutV:5,
+          TintV:10,
+          TextV:10,
+          Hum_V:10
       };
 
 
@@ -874,7 +879,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       function f(num, x) {
         var y = (graphique[num + dataOffset][x]) / divider;
-        if ((num == 2) || (num==5))  y = y/10; // pour les humidite, on divise par 100
+        if ((num == 2))  y = y/10; // pour les humidite, on divise par 100
         return (y);
       }
 

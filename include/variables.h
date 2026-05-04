@@ -261,15 +261,14 @@ extern float Tint, Text, Humid;
 
 extern uint8_t cpt_securite;
 extern uint8_t WIFI_CHANNEL;
-extern RTC_DATA_ATTR uint8_t
-    last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
+extern RTC_DATA_ATTR uint8_t last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
 extern uint8_t rtc_valid;  // 0:cold reset  1:reset apres deep sleep
 extern RTC_DATA_ATTR uint16_t
     cpt_cycle_batt;                   // Compteur cycles pour mesure batterie
 extern volatile uint8_t ackReceived;  // global pour indiquer que le peer a acké
 extern volatile int ackChannel;       // canal où ça a marché
 extern uint8_t mode_reseau;
-extern uint8_t init_time;
+extern RTC_DATA_ATTR uint8_t init_time;
 extern float heure;
 extern RTC_DATA_ATTR uint8_t skip_graph;
 

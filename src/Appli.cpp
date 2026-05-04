@@ -166,9 +166,9 @@ void setup_nvs_rtc()
     }   
 
 
-    Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 0);
-    if ((!Nb_jours_Batt_log) || (Nb_jours_Batt_log > 15)) {  // 1 à 15
-      Nb_jours_Batt_log = 2;  // Freq : tous les2 jours
+    Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 100);
+    if ((Nb_jours_Batt_log > 15)) {  // 0 à 15
+      Nb_jours_Batt_log = 2;  // Freq : tous les2 jours   0:inactif
       preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
       Serial.printf("Raz Freq log Batt: %i\n\r", Nb_jours_Batt_log);
     }
@@ -342,6 +342,8 @@ void setup_1()
 // apres demarrage reseau
 void setup_2()
 {
+
+
   #ifdef ESP_TJ_ACTIF
 
     // lecture des données sauvegardées dans la partition log_flashG
@@ -390,6 +392,10 @@ void setup_2()
     Serial.println("   En attente de messages...");
     Serial.println("======================================\n\n");
     delay(2000); // 2 secondes de pause pour lire
+
+  #else  // Si veille
+      readLastLogsG(99);
+
   #endif
 }
 
@@ -556,7 +562,7 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
 
   if (param == 10)  // registre 10 : Nb jours log batterie
   {
-    if ((valeur) && (valeur < 16)) {
+    if (valeur <= 15) {
       res = 0;
       Nb_jours_Batt_log = valeur;
       preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
@@ -759,7 +765,7 @@ uint8_t lecture_Tint(float *mesure, float*humid)
 
   if (valeur > 50) Tint_erreur = 2;
   if (valeur < -20) Tint_erreur = 3;
-  Serial.printf("lecture Tint : %.2f Err:%i\n\r", valeur, Tint_erreur);
+  Serial.printf("lecture Tint : %.2f Humid:%.2f Tint_erreur:%i\n\r", valeur, valeur2, Tint_erreur);
   if (Tint_erreur) {
     valeur = 20.0;
     valeur2 = 50.0;
@@ -885,6 +891,7 @@ void event_cycle()  // toutes les 15 minutes
 
     // Récupération de la température extérieure par internet
     //fetch_internet_temp();
+    Text = 12.0;
 
     // lecture temp-humi
     uint8_t err_Tint = lecture_Tint(&Tint, &Humid);
@@ -894,7 +901,7 @@ void event_cycle()  // toutes les 15 minutes
       Serial.printf("Temp int:%.2f Humid:%.2f\n\r", Tint, Humid); 
 
     if (action_envoi) envoi_valeur(Tint, Humid);  // envoi  par ESP-NOW
-
+    //Humid = 100.0;
     
     uint8_t i;
     // chaque heure
@@ -923,10 +930,12 @@ void event_cycle()  // toutes les 15 minutes
     if (type_reveil != 5)      // compteur 24h
     {
       compteur_24h++;
-      if (compteur_24h >= 24*60/periode_cycle)  // toutes les 24h
+      if (compteur_24h >= 24*60/periode_cycle) // )  // toutes les 24h
       {
+        Serial.println("24h");
         activation_writelog();
         enreg_24h(1);
+        compteur_24h=0;
       }
     }
 }
