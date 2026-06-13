@@ -5,6 +5,7 @@ TODO :
 A compiler pour une firebeetle esp32-C6 ou uPesy vroom
 Avantages Platformio : Ifdef, intellisense, temps compil, backtrace
 
+v1.3 05/2026 board upesy, humidite absolue, envoi vers serveur
 v1.2 03/2026 Surveillance batterie, log 24h en eeprom, OTA à la demande
 v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
 
@@ -34,7 +35,7 @@ Configuration des options de programmation :
 
 
 #define DELAI_PING  180  // en secondes, pour le websocket
-#define Version "V1.1"
+#define Version "V1.3"
 
 
 #define DEBUG_ETHERNET_WEBSERVER_PORT Serial
@@ -120,7 +121,7 @@ uint8_t err_wifi_repet;  // permet de resetter si le wifi ne se rétablit pas au
 uint8_t init_masquage=1;
 RTC_DATA_ATTR uint8_t cpt24h_batt;
 
-void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf);
+uint8_t envoi_data_gateway(Message_EspNow mess_esp);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
 
 // variable globale de 4000c en RAM pour dump log et autres requetes
@@ -220,7 +221,7 @@ uint8_t DelaiWebsocket = 1;
 uint16_t cpt_ws_timeout=0, cpt_ws_ping=0;
 
 bool force_stay_awake = false; // Flag pour rester éveillé après appui bouton
-uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par bouton_reveil 3:reveil par PIR
+uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
 unsigned long wake_up_time = 0; // Temps de réveil
 
 //x seconds Watchdog 
@@ -329,9 +330,9 @@ uint8_t etat_connect_ethernet = 0;
 AsyncWebServer server(80);
 
 uint8_t cycle24h;
-RTC_DATA_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0;
-RTC_DATA_ATTR uint8_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0;
-RTC_DATA_ATTR uint16_t TextV=0, TintV=0, HumV=0;   
+RTC_DATA_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0, HA_moy24h=0, PIR_24h=0;
+RTC_DATA_ATTR uint16_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0, cpt24_HA=0, cpt24_PIR=0;
+RTC_DATA_ATTR uint16_t TextV=0, TintV=0, HumV=0, HAV=0, PIRV=0;  // pour stockage dans la partition log_flashG
 
 // OTA
 bool otaEnabled = false;
@@ -699,6 +700,20 @@ void uart1Task(void * parameter) {
   }
 }
 
+
+void payloadWrite16(uint8_t* payload, uint8_t& pos, uint16_t val)
+{
+    payload[pos++] = val & 0xFF;
+    payload[pos++] = (val >> 8) & 0xFF;
+}
+
+uint16_t selec_graph(uint8_t code, uint16_t ha, uint16_t hum,  uint16_t pir)
+{
+  if (code==0) return ha;
+  else if (code==1) return hum;
+  else return pir;
+}
+
 // log batterie et Temp moyenne toutes les 24h.
 void enreg_24h( uint8_t veille)
 {
@@ -747,25 +762,35 @@ void enreg_24h( uint8_t veille)
   err_Heure=0;
 
   // graphique des temperatures quotidiennes
-  uint16_t tempI=1, tempE=1, Hum=1;
+  uint16_t tempI=1, tempE=1, Hum=1, HA=1, PIR=1;
   if (cpt24_Tint)  tempI = (uint16_t)(tempI_moy24h/cpt24_Tint*10);
   if (cpt24_Text)  tempE = (uint16_t)(tempE_moy24h/cpt24_Text*10);
   if (cpt24_Hum) Hum = (uint16_t)(Hum_24h/cpt24_Hum*10);
+  if (cpt24_HA) HA = (uint16_t)(HA_moy24h/cpt24_HA*10);
+  if (cpt24_PIR) PIR = (uint8_t)(PIR_24h/cpt24_PIR*10);
   if (!tempI) tempI=1;  // permet d'afficher quand meme le point sur le graphique
   if (!tempE) tempE=1;  // permet d'afficher quand meme le point sur le graphique
   if (!Hum) Hum=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!HA) HA=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!PIR) PIR=1;  // permet d'afficher quand meme le point sur le graphique
   TextV = tempE;
   TintV = tempI;
   HumV = Hum;
+  HAV = HA;
+  PIRV = PIR;
 
   //Serial.printf("Temp24h I:%.2f %i E:%.2f %i C:%.2f %i\n\r", tempI_moy24h, cpt24_Tint, tempE_moy24h, cpt24_Text, cout_moy24h, cpt24_Cout);
 
   tempI_moy24h=0;
   tempE_moy24h=0;
   Hum_24h=0;
+  HA_moy24h=0;
+  PIR_24h=0;
   cpt24_Tint=0;
   cpt24_Text=0;
   cpt24_Hum=0;
+  cpt24_HA=0;
+  cpt24_PIR=0;
 
   uint8_t i;
   for (i = NB_Val_Graph - 1; i; i--) {
@@ -774,14 +799,31 @@ void enreg_24h( uint8_t veille)
     graphique[i][5] = graphique[i - 1][5];
   }
   graphique[0][3] = tempI;
-  graphique[0][4] = tempE;
-  graphique[0][5] = Hum;  
+  graphique[0][4] = selec_graph(GRAPH2, HA, Hum, PIR);
+  graphique[0][5] = selec_graph(GRAPH3, HA, Hum, PIR);  
 
-  Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i\n\r", tempI, tempE, Hum);
-  writeLogG('G', tempI, tempE, Hum); // Enregistrment en Flash des 3 valeurs du graphique
+  Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i HA:%i\n\r", tempI, tempE, Hum, HA);
+  writeLogG('G', tempI, HA, Hum); // Enregistrment en Flash des 3 valeurs du graphique
 
+  if (action_envoi && esp_now_actif)
+  {
+    Message_EspNow message;
 
+    message.destinataire = SERVER_ADD & 0x80;  // 0x80 = message hexa
+    message.emetteur = ADDRESS;
+    message.code = 'C';
+    message.code2 = 'J';
+
+    uint8_t pos = 0;
+    payloadWrite(message.payload, pos, tempI);
+    payloadWrite(message.payload, pos, Hum);
+    message.longueur = 5 + pos - 3;
+
+    uint8_t result = envoi_data_gateway(message);
+
+  }      
 }
+
 
 void taskHandler(void *parameter) {
     systeme_eve_t evt;
@@ -1055,10 +1097,53 @@ void init_ram_variables()
   Text=10.0;
 }
 
+void resetI2C() {
+  Wire.end();              // stop I2C
+
+  delay(10);
+
+  Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
+  Wire.setClock(100000);  // stable (100 kHz conseillé)
+}
+
+void i2cBootRecovery() {
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  pinMode(PIN_SCL, INPUT_PULLUP);
+
+  delay(50);
+
+  Wire.end(); // sécurité
+
+  // optionnel mais utile si bus bloqué
+  i2cRecovery();  // ou simple reset clock SCL
+
+  delay(20);
+}
+
+void i2cRecovery() {
+  pinMode(PIN_SDA, OUTPUT);
+  pinMode(PIN_SCL, OUTPUT);
+
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(SCL, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(SCL, LOW);
+    delayMicroseconds(5);
+  }
+
+  // STOP condition
+  digitalWrite(PIN_SDA, LOW);
+  digitalWrite(PIN_SCL, HIGH);
+  digitalWrite(PIN_SDA, HIGH);
+
+  Wire.end();
+  Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
+}
+
 void setup()
 {
   
-  delay(1000);
+  //delay(1000);
   // Cause reset :
   resetReason0 = (uint8_t) esp_reset_reason();
   Serial.begin(115200);
@@ -1074,7 +1159,7 @@ void setup()
       type_reveil=4; ext1:BTN = nvs complet, demarrage reseau, 1 min.
       rtc & type_reveil=2; ext1:PIR = pas de nvs. si stockage flash => partition logèflash
       rtc & type_reveil=3(inconnu) => lecture_temp
-      type_reveil=5; tj_actif
+      type_reveil=10 = tj_actif
       */
   if (wakeup_reason)
   {
@@ -1090,15 +1175,15 @@ void setup()
       Serial.printf("wakeup_pins: %016llX\n", wakeup_pins);
       if (wakeup_pins & (1ULL << PIN_REVEIL)) {
           Serial.println("Réveil par PIN1");
+          force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
+          wake_up_time = millis() + 30000; // Prolonger si Bouton réveil est appuyé
+          Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
       }
 
       if (wakeup_pins & (1ULL << PIN_REVEIL2)) {
-          Serial.println("Réveil par PIN2");
+          Serial.println("Réveil par PIN2-PIR");  // PIR
+          reveil = 2;
       }
-
-      force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
-      wake_up_time = millis() + 60000; // Prolonger si Bouton réveil est appuyé
-      Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
     }
   }
   else
@@ -1132,18 +1217,18 @@ void setup()
       type_reveil=4; ext1:BTN = nvs complet, demarrage reseau, 1 min.
       rtc & type_reveil=2; ext1:PIR = pas de nvs. si stockage flash => partition logèflash
       rtc & type_reveil=3(inconnu) => lecture_temp
-      type_reveil=5; tj_actif
+      type_reveil=10; tj_actif
       */
-  type_reveil=0;       // power_on pour veille
+  type_reveil=0;       // power_on 
   if (reveil==4)  type_reveil=4;  //BTN
   else if (rtc_valid)
   {
-    if (reveil==1) type_reveil=1; // Timer
+    if (reveil==1) type_reveil=1; // Timer 15 min
     else if (reveil==2) type_reveil=2; // PIR
     else type_reveil=3;           // inconnu
   }
   #ifdef ESP_TJ_ACTIF
-    type_reveil = 5;  // power on, toujours actif
+    type_reveil = 10;  // power on, toujours actif
   #endif
 
   // Optimisation processeur : autorise le processeur à s'arrêter si inactif
@@ -1160,7 +1245,7 @@ void setup()
   //source_reveil=esp_sleep_get_wakeup_cause();
 
   // Délai de stabilisation pour éviter les conflits UART/WiFi
-  delay(500);
+  //delay(500);
 
   #ifdef ESP_TJ_ACTIF
     esp_log_level_set("*", ESP_LOG_WARN);  // niveau minimum   - ESP_LOG_INFO  ou rien
@@ -1426,6 +1511,7 @@ void setup()
     if (!buttonState)
     {
       delay(1000);
+      Serial.println("Test appui long BTN0 pour Wifi_AP");
       buttonState = digitalRead(BTN_PIN[0]);
       if (!buttonState)
       {
@@ -1440,7 +1526,15 @@ void setup()
 
   // -------------  Capteur/Detecteur : stockage ou envoie infos à la gateway -------------------
 
-  if (type_reveil < 4) 
+  if (type_reveil ==2)   // Detection PIR
+  {
+    detection_pir();
+    uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+    if (mode_rapide==12)
+    sleep_time = (uint64_t)periode_cycle * 1000000;
+    passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+  }
+  else if (type_reveil < 4) // Poweron(0), Timer(1), Inconnu(3)
   {
     event_cycle();
     uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
@@ -2547,9 +2641,9 @@ uint8_t requete_Set_Action(const char *reg, const char *data)
     if (strcmp(reg, "E_NOW") == 0) 
     { 
       res=0; 
-      envoi_data_gateway(1, 20.1, 20.2);
+      //envoi_data_gateway(1, 20.1, 20.2);
       delay(200);
-      Serial.printf("envoi esp_now T=20.2\n\r");
+      //Serial.printf("envoi esp_now T=20.2\n\r");
       delay(1000);
     }
   
@@ -3127,8 +3221,8 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"PPE\":%i,", Proch_periode);
 
   p += sprintf(p, "\"Text\":%.1f,", Text);
-  p += sprintf(p, "\"Tint\":%.1f,", Tint);
-  p += sprintf(p, "\"Humid\":%.1f,", Humid);
+  p += sprintf(p, "\"Tint\":%.2f,", Tint);
+  p += sprintf(p, "\"Humid\":%.2f,", Humid);
 
 
   uint8_t batSI = 0;
@@ -3142,6 +3236,9 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"TextV\":%i,", TextV);  // Temp ext de la veille
   p += sprintf(p, "\"TintV\":%i,", TintV);  // Temp ext de la veille
   
+  p += sprintf(p, "\"PIR_D\":%i,", compteur_detection); // derniere 15min
+  p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
+
 
   // Tableaux : E(erreurs) T(temp)
   if (!type)  // pas d'envoi des graphiques si type=1(maj)
@@ -4053,10 +4150,9 @@ void passage_deep_sleep(uint64_t temps)
   Serial.flush();
 
   Serial.printf("Passage deep sleep pour %llu\n", (unsigned long long)sleep_us);
-  Serial.flush();
-  delay(100);
 
   esp_sleep_enable_timer_wakeup(temps);
+
   #ifdef ESP32_v1
     esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_REVEIL, 0); // Réveil par bouton (0 = bas)
   #endif
@@ -4074,9 +4170,12 @@ void passage_deep_sleep(uint64_t temps)
     //esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_HIGH); // Réveil par bouton (niveau bas)
     gpio_config_t config;
       config.pin_bit_mask = ((1ULL << PIN_REVEIL));// | (1ULL << PIN_REVEIL2));
+      #ifdef PIR_ACTIF
+        config.pin_bit_mask = ((1ULL << PIN_REVEIL) | (1ULL << PIN_REVEIL2));
+      #endif
       config.mode = GPIO_MODE_INPUT;
       config.pull_up_en = GPIO_PULLUP_DISABLE;
-      config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+      config.pull_down_en = GPIO_PULLDOWN_DISABLE;
       config.intr_type = GPIO_INTR_HIGH_LEVEL; // niveau haut pour réveil
       gpio_config(&config);
 
@@ -4085,29 +4184,27 @@ void passage_deep_sleep(uint64_t temps)
       esp_sleep_enable_ext1_wakeup(config.pin_bit_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
 
       Serial.println("Going to sleep...");
-      Serial.flush();
-      delay(1000);
-
   #endif
+
   #ifdef ESP32_S3   // S3
     rtc_gpio_deinit((gpio_num_t)PIN_REVEIL);
     gpio_config_t config = {
       .pin_bit_mask = (1ULL << PIN_REVEIL),
       .mode = GPIO_MODE_INPUT,
-      .pull_up_en = GPIO_PULLUP_ENABLE,   // ACTIVATION PULLUP CRITIQUE
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .pull_up_en = GPIO_PULLUP_DISABLE,   // ACTIVATION PULLUP CRITIQUE
+      .pull_down_en = GPIO_PULLDOWN_ENABLE,
       .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&config);
 
 
-// config RTC GPIO
-rtc_gpio_set_direction((gpio_num_t)PIN_REVEIL, RTC_GPIO_MODE_INPUT_ONLY);
-rtc_gpio_pulldown_dis((gpio_num_t)PIN_REVEIL);
-rtc_gpio_pullup_en((gpio_num_t)PIN_REVEIL);
+    // config RTC GPIO
+    rtc_gpio_set_direction((gpio_num_t)PIN_REVEIL, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis((gpio_num_t)PIN_REVEIL);
+    rtc_gpio_pullup_en((gpio_num_t)PIN_REVEIL);
 
     esp_sleep_enable_ext1_wakeup( (1ULL << PIN_REVEIL),
-    ESP_EXT1_WAKEUP_ANY_LOW);   // réveil si pin = LOW
+    ESP_EXT1_WAKEUP_ANY_HIGH);   // réveil si pin = High
 
     //gpio_wakeup_disable((gpio_num_t)PIN_REVEIL);
     //esp_sleep_enable_gpio_wakeup();
@@ -4115,8 +4212,6 @@ rtc_gpio_pullup_en((gpio_num_t)PIN_REVEIL);
     delay(50);
   #endif
 
-  Serial.printf("GPIO state: %d\n", gpio_get_level((gpio_num_t)PIN_REVEIL));
-  Serial.flush();
 
   #ifdef ESP32_Fire2  // Firebeetle
     // 2. Configurer le réveil par GPIO pour ESP32-C6
@@ -4133,6 +4228,14 @@ rtc_gpio_pullup_en((gpio_num_t)PIN_REVEIL);
     esp_deep_sleep_enable_gpio_wakeup( 1ULL << PIN_REVEIL, ESP_GPIO_WAKEUP_GPIO_LOW);
   #endif
   
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+
+  Serial.printf("GPIO state: %d\n", gpio_get_level((gpio_num_t)PIN_REVEIL));
+  Serial.flush();
+  delay(500);
+  yield();
+
   esp_deep_sleep_start();
 }
 

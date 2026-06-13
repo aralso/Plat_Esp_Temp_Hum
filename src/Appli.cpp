@@ -20,17 +20,7 @@
 extern WiFiClient client;
 extern Preferences preferences_nvs;  // Déclaration externe
 
-//void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
-void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
-//void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
-  void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
-#else
-  void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
-#endif
-
-uint8_t parseMacString(const char* str, uint8_t mac[6]);
 
 // variables Detection PIR
 RTC_DATA_ATTR uint16_t compteur_detection=0;
@@ -48,7 +38,7 @@ RTC_DATA_ATTR uint16_t Seuil_batt_arret_ESP;
 RTC_DATA_ATTR uint8_t Nb_jours_Batt_log;
 RTC_DATA_ATTR uint16_t prolong_veille;
 RTC_DATA_ATTR uint8_t action_stockage;
-RTC_DATA_ATTR uint8_t action_envoi;
+RTC_DATA_ATTR uint8_t action_envoi, freq_envoi, cpt_envoi;
 
 RTC_DATA_ATTR uint8_t compteur_graph;
 RTC_DATA_ATTR uint16_t compteur_24h;
@@ -59,8 +49,22 @@ RTC_DATA_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
 
+
+
+//void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
+//void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
+
+#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
+  void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
+#else
+  void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
+#endif
+
+uint8_t parseMacString(const char* str, uint8_t mac[6]);
+
 uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow *message);
-void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf);
+uint8_t envoi_data_gateway(Message_EspNow mess_esp);
 
 
 #ifdef Temp_int_DS18B20
@@ -165,6 +169,15 @@ void setup_nvs_rtc()
       Serial.println("Raz action envoi: 0");
     }   
 
+    freq_envoi = preferences_nvs.getUChar("FrEn", 0);
+    if (freq_envoi && (freq_envoi <= MAX_TEMP))         
+      Serial.printf("Frequence envoi : %i\n\r", freq_envoi);
+    else {
+      freq_envoi = 1;
+      preferences_nvs.putUChar("FrEn", 1);
+      Serial.println("Raz frequence envoi: 1");
+    }   
+
 
     Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 100);
     if ((Nb_jours_Batt_log > 15)) {  // 0 à 15
@@ -180,6 +193,7 @@ void setup_nvs_rtc()
       Serial.printf("Esp_now actif : %i\n\r", esp_now_actif);
     else {
       esp_now_actif = 0;
+      preferences_nvs.putUChar("EspN", esp_now_actif);
       Serial.println("Raz Esp_now : inactif");
     }
     // seuil batterie basse pour arret ESP
@@ -227,11 +241,11 @@ void setup_nvs_rtc()
 
     if (parseMacString(storedString.c_str(), mac_gw))
     {
-      Serial.printf("MAC chaudiere : %02X:%02X:%02X:%02X:%02X:%02X\n",
+      Serial.printf("MAC serveur : %02X:%02X:%02X:%02X:%02X:%02X\n",
         mac_gw[0], mac_gw[1], mac_gw[2],
         mac_gw[3], mac_gw[4], mac_gw[5] );
     }
-    else {  Serial.println("MAC chaudière absente ou invalide");  }
+    else {  Serial.println("MAC serveur absent ou invalide");  }
 
 
     // Initialisation du channel préférentiel wifi-esp-now
@@ -284,19 +298,9 @@ void setup_1()
 
     Tint = 15;
     #ifdef Temp_int_HDC1080
-
-      #ifdef ESP32_S3
-          Wire.begin(8,9); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
-      #endif
-      #ifdef ESP32_v1
-        Wire.begin(21, 22); // Forçage des pins SDA=21, SCL=22 pour ESP32 DevKit V1
-      #endif
-      #ifdef ESP32_Fire2
-        Wire.begin(19, 20); // Forçage des pins SDA=20, SCL=21 pour ESP32 Firebeetle 2
-      #endif
-      #ifdef ESP32_uPesy
-        Wire.begin(21, 22); // Forçage des pins SDA=21, SCL=22 pour ESP32 uPesy
-      #endif
+      delay(200);
+      //i2cBootRecovery();
+      Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
 
       hdc1080.begin(0x40);
       /*if (i2cDevicePresent(0x40)) {
@@ -405,11 +409,8 @@ void appli_event_on(systeme_eve_t evt)
 {
 }
 
-void appli_event_off(systeme_eve_t evt)
+void detection_pir()
 {
-  // Detecteur PIR activé
-  if (evt.data == 1)
-  {
     compteur_detection++;  // nb de detection des 5 dernières minutes
     compteur_detection_1h++; // nb de detection de la dernière heure
     if (compteur_detection_1h == 1) // premiere detection du cyle 1h
@@ -417,6 +418,14 @@ void appli_event_off(systeme_eve_t evt)
       writeLog('D', 1, 0, 0, "PIR");
       // envoi d'un sms par http pour prevenir d'une presence
     }
+}
+
+void appli_event_off(systeme_eve_t evt)
+{
+  // Detecteur PIR activé
+  if (evt.data == 1)
+  {
+    detection_pir();
   }
 }
 
@@ -517,6 +526,11 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
     res = 0;
     *valeur = action_envoi;
   }
+  if (reg == 19)  // registre 19 : frequence envoi
+  {
+    res = 0;
+    *valeur = freq_envoi;
+  }
   if (reg == 40)  // registre 40 : activation esp_now
   {
     res = 0;
@@ -600,10 +614,21 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
     }
   }
   if (param == 18)  // registre 18 : action envoi      
-  {    if ((valeur == 0) || (valeur == 1))
-    {      res = 0;
+  {    
+    if ((valeur == 0) || (valeur == 1))
+    {      
+      res = 0;
       action_envoi = valeur;
       preferences_nvs.putUChar("AcEn", action_envoi);
+    }
+  }
+  if (param == 19)  // registre 19 : frequence envoi
+  {    
+    if (valeur && (valeur <= MAX_TEMP))         
+    {     
+      res = 0;
+      freq_envoi = valeur;
+      preferences_nvs.putUChar("FrEn", freq_envoi);
     }
   }
   if (param == 40)  // registre 40 : activation esp_now
@@ -681,7 +706,7 @@ uint8_t requete_Set_String_appli(int param, const char *texte)
     {
       if (!parseMacString(texte, mac_gw))
       {
-          Serial.println("MAC dest invalide");
+          Serial.println("MAC Serveur invalide");
       }
       else
       {
@@ -715,6 +740,11 @@ uint8_t requete_action_appli(const char *reg, const char *data)
   return res;
 }
 
+float absoluteHumidity(float T, float RH)
+{
+    return (13.247f * RH/100 * exp((17.67f * T) / (T + 243.5f)))
+           / (273.15f + T);
+}
 
 // erreur :0:ok  sinon erreur 2 à 7
 uint8_t lecture_Tint(float *mesure, float*humid)
@@ -747,9 +777,23 @@ uint8_t lecture_Tint(float *mesure, float*humid)
 
     #ifdef Temp_int_HDC1080
       valeur = hdc1080.readTemperature();
-      if (isnan(valeur)) {
-        valeur = 20.0;
-        Tint_erreur = 4;
+      if (isnan(valeur) || (valeur>124)) {
+        Serial.println("Reset i2c)");
+        resetI2C(); 
+        hdc1080.begin(0x40); 
+        valeur = hdc1080.readTemperature();
+
+        if (isnan(valeur) || (valeur>124)) {
+          Serial.println("Recovery i2c)");
+          i2cRecovery();
+          hdc1080.begin(0x40); 
+          valeur = hdc1080.readTemperature();
+          if (isnan(valeur) || (valeur>124)) {
+            valeur = 20.0;
+            Tint_erreur = 4;
+          } else  Tint_erreur=0;
+        } else  Tint_erreur=0;
+
       } else {
         Tint_erreur=0;
       }
@@ -871,73 +915,162 @@ uint8_t fetch_internet_temp() {
   return res;
 }
 
-void envoi_valeur(float Tint, float Humid) {
-  if (esp_now_actif) {
-    Message_EspNow message;
-    message.type = 1; // Type 1 pour température
-    message.valuef = Tint; // Valeur de la température
+uint8_t envoi_valeur()
+{
+  if (!esp_now_actif || freq_envoi<1 || freq_envoi>MAX_TEMP) return 1;
 
-    esp_err_t result = esp_now_send(mac_gw, (uint8_t *)&message, sizeof(message));
-    if (result == ESP_OK) {
-      Serial.println("✅ Température envoyée par ESP-NOW");
-    } else {
-      Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
-    }
+  Message_EspNow message;
+
+  message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
+  message.emetteur = ADDRESS;
+  message.code = 'C';
+  message.code2 = 'T';
+
+  message.payload[0] = freq_envoi;
+  message.payload[1] = (skip_graph* periode_cycle) & 0xFF;
+  message.payload[2] = ((skip_graph* periode_cycle) >> 8) & 0xFF;
+  
+  uint8_t pos = 3;
+  for (uint8_t cpt = 0; cpt < freq_envoi; cpt++)
+  {
+    payloadWrite(message.payload, pos, graphique[cpt][0]);
+    payloadWrite(message.payload, pos, graphique[cpt][1]);
   }
+
+  // Taille réelle du message envoyé
+  message.longueur = 5 + pos - 3;
+
+  uint8_t result = envoi_data_gateway(message);
+
+
+  if (result == ESP_OK) {
+      Serial.printf("✅ %d valeurs Temp-HA-HR envoyées\n",  message.payload[0]);
+  } else {
+      Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
+      activation_writelog();
+      writeLog('E', 8, graphique[0][0]/100, graphique[0][1]/100, "Esp_now");
+
+      return 1;
+  }
+  return 0;
 }
 
-void event_cycle()  // toutes les 15 minutes 
+void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
 {
 
-    // Récupération de la température extérieure par internet
-    //fetch_internet_temp();
-    Text = 12.0;
-
-    // lecture temp-humi
-    uint8_t err_Tint = lecture_Tint(&Tint, &Humid);
-    if (err_Tint)
-      log_erreur(Code_erreur_Tint, err_Tint, 1);
-    else
-      Serial.printf("Temp int:%.2f Humid:%.2f\n\r", Tint, Humid); 
-
-    if (action_envoi) envoi_valeur(Tint, Humid);  // envoi  par ESP-NOW
-    //Humid = 100.0;
-    
     uint8_t i;
-    // chaque heure
-    compteur_graph++;
-    if (compteur_graph >= skip_graph)  // 1 valeur sur x
-    {
-      compteur_graph = 0;
-      for (i = NB_Val_Graph - 1; i; i--) {
-        graphique[i][0] = graphique[i - 1][0];
-        graphique[i][1] = graphique[i - 1][1];
-        graphique[i][2] = graphique[i - 1][2];
-      }
-      graphique[0][0] = round(Tint * 10);
-      graphique[0][1] = round(Text * 10);
-      graphique[0][2] = round(Humid * 10);
-    }
-    tempI_moy24h += Tint;
-    cpt24_Tint++;
-    tempE_moy24h += Text;
-    cpt24_Text++;
-    Hum_24h += Humid;
-    cpt24_Hum++;
+    // chaque 5/15 minutes
+    for (i = NB_VAL_TAB - 1; i; i--) {
+        Nb_PI[i]= Nb_PI[i - 1];
+    }    
+    Nb_PI[0] = compteur_detection;
+    compteur_detection=0;
 
-    //Serial.printf("fin cycle :reveil:%i cpt:%i %i tint:%i 24h:%i\n\r", type_reveil, compteur_graph, skip_graph, graphique[0][0], compteur_24h);
-    
-    if (type_reveil != 5)      // compteur 24h
+  // Récupération de la température extérieure par internet
+  //fetch_internet_temp();
+  Text = 0;
+
+  // lecture temp-humi
+  uint8_t err_Tint = lecture_Tint(&Tint, &Humid);
+  if (err_Tint)
+    log_erreur(Code_erreur_Tint, err_Tint, 1);
+  else
+    Serial.printf("Temp int:%.2f Humid:%.2f\n\r", Tint, Humid); 
+
+  float HA = absoluteHumidity(Tint, Humid);
+
+  float tempI_moy15m, tempE_moy15m, HA_moy15m, Hum_moy15m, PIR_moy15m;
+  uint8_t cpt15_Tint, cpt15_Text, cpt15_HA, cpt15_Hum, cpt15_PIR;
+
+  tempI_moy15m += Tint;
+  cpt15_Tint++;
+  tempE_moy15m += Text;
+  cpt15_Text++;
+  HA_moy15m += HA;
+  cpt15_HA++;
+  Hum_moy15m += Humid;
+  cpt15_Hum++;
+  PIR_moy15m += compteur_detection_1h;
+  cpt15_PIR++;
+
+  // chaque 15 minutes
+  compteur_graph++;
+  if (compteur_graph >= skip_graph)  // 1 valeur sur x
+  {
+    int16_t tempI_arrondi = 200;
+    int16_t tempE_arrondi = 150;
+    int16_t HA_arrondi = 10;
+    int16_t Hum_arrondi = 500;
+    int16_t PIR_arrondi = 0;
+
+     if (cpt15_Tint > 0) {  tempI_arrondi = round(tempI_moy15m / cpt15_Tint * 100);  }
+     if (cpt15_Text > 0) {  tempE_arrondi = round(tempE_moy15m / cpt15_Text * 100); }
+     if (cpt15_HA > 0) {    HA_arrondi = round(HA_moy15m / cpt15_HA * 100); }
+     if (cpt15_Hum > 0) {   Hum_arrondi = round(Hum_moy15m / cpt15_Hum * 100); }
+     if (cpt15_PIR > 0) {   PIR_arrondi = round(PIR_moy15m / cpt15_PIR * 10); }
+
+    compteur_graph = 0;
+    for (i = NB_Val_Graph - 1; i; i--) {
+      graphique[i][0] = graphique[i - 1][0];
+      graphique[i][1] = graphique[i - 1][1];
+      graphique[i][2] = graphique[i - 1][2];
+    }
+    graphique[0][0] = tempI_arrondi; // 20°C => 2000
+    graphique[0][1] = selec_graph(GRAPH2, HA_arrondi, Hum_arrondi, PIR_arrondi);
+    graphique[0][2] = selec_graph(GRAPH3, HA_arrondi, Hum_arrondi, PIR_arrondi);
+
+    if (compteur_detection_1h>1)  // au moins 2
     {
-      compteur_24h++;
-      if (compteur_24h >= 24*60/periode_cycle) // )  // toutes les 24h
+      uint8_t tot = (uint8_t)compteur_detection_1h;
+      if (compteur_detection_1h > 255) tot = 255;
+      writeLog('D', 1, tot, 0, "PIR 1h");
+    }
+    compteur_detection_1h = 0;
+
+    if (action_envoi) 
+    {
+      cpt_envoi++;
+      if (cpt_envoi >= freq_envoi)  // envoi toutes les x valeurs (x*skip_graph*15 minutes)
       {
-        Serial.println("24h");
-        activation_writelog();
-        enreg_24h(1);
-        compteur_24h=0;
+        cpt_envoi=0;
+        envoi_valeur();  // envoi  par ESP-NOW
       }
     }
+    tempI_moy15m = 0;
+    tempE_moy15m = 0;
+    HA_moy15m = 0;
+    Hum_moy15m = 0;
+    PIR_moy15m = 0;
+    cpt15_Tint = 0;
+    cpt15_Text = 0;
+    cpt15_HA = 0; 
+    cpt15_Hum = 0;
+    cpt15_PIR = 0;
+  }
+  tempI_moy24h += Tint;
+  cpt24_Tint++;
+  tempE_moy24h += Text;
+  cpt24_Text++;
+  HA_moy24h += HA;
+  cpt24_HA++;
+  Hum_24h += Humid;
+  cpt24_Hum++;
+  PIR_24h += compteur_detection_1h;
+  cpt24_PIR++;
+
+  //Serial.printf("fin cycle :reveil:%i cpt:%i %i tint:%i 24h:%i\n\r", type_reveil, compteur_graph, skip_graph, graphique[0][0], compteur_24h);
+  
+  if (type_reveil != 10)      // si diff de toujours actif => compteur 24h
+  {
+    compteur_24h++;
+    if (compteur_24h >= 24*60/periode_cycle) // )  // toutes les 24h
+    {
+      Serial.println("24h");
+      activation_writelog();
+      enreg_24h(1);  // et envoi si actif
+      compteur_24h=0;
+    }
+  }
 }
 
 
@@ -1017,27 +1150,10 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 }
 #endif
 
-void envoi_detection()
-{
-  // --- MODE SONDE DISTANTE (ESP-NOW) ---
-  uint8_t Tint_erreur = lecture_Tint(&Tint, &Humid);  // Mesure locale
-  if (Tint_erreur) 
-  {
-    Tint=25.0;
-    #ifdef DEBUG
-          Tint = 18.0;
-    #endif
-  }
-  envoi_data_gateway(1, 1, Tint);  // type 1: detection, valeur Tint dans partie float du message  
-}
 
 // envoie data à la gateway par ESP_now
-void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf)
+uint8_t envoi_data_gateway(Message_EspNow mess_esp)
 {
-  Message_EspNow mess_esp;
-  mess_esp.type = type;
-  //mess_esp.value16 = valeur16;
-  mess_esp.valuef = valeurf;
 
   if ((mac_gw[0] || mac_gw[3] || mac_gw[4]) && (esp_now_actif==1))
   {
@@ -1120,11 +1236,13 @@ void envoi_data_gateway(uint8_t type, uint16_t valeur16, float valeurf)
     else etat_now=0; // si etat_now corrompu, remise à 0
 
     Serial.printf("etat_now:%i\n\r", etat_now);
+    return 1-deliverySuccess;
     
   }
   else
     Serial.println("Adresse Mac gateway nulle");
 
+  return 2;
 }
 
 uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
@@ -1172,11 +1290,15 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
                 actual_channel,
                 mac_gw[0], mac_gw[1], mac_gw[2],
                 mac_gw[3], mac_gw[4], mac_gw[5]);*/
-  Serial.printf("   Message: Type=%d, val:%i Float=%.2f°C\n", message->type, 0, message->valuef); // message->value16,
   
   ackReceived=0;
   ackChannel = -1;
-  esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, sizeof(Message_EspNow));
+  esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, message->longueur+3);
+
+  // impression du message envoyé pour diagnostic
+  for (int i = 0; i < message->longueur+3; i++) {
+    Serial.printf("%02X ", ((uint8_t*)message)[i]);
+  }
 
   if (resulta == ESP_OK)
   {

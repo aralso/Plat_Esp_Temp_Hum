@@ -16,9 +16,16 @@
 //#define ESP32_v1    // DOIT ESP32 DEVKIt V1
 
 #ifdef ESP_VEILLE
+  // en veille 11uA
+  // activation pendant 0,4 secondes à 40mA, chaque 15 minutes => 17uA en moyenne
+  // si bouton => activation pendant 30 secondes à 120mA (correspnd à 2 jours de veille)
+  #define GRAPH2  1 // 0:HUMID_ABS  1:HUMID_REL  2:Capteur PIR
+  #define GRAPH3  0
+  //#define PIR_ACTIF
+  
   //#define ESP32_Fire2
-  //#define ESP32_uPesy
-  #define ESP32_S3
+  #define ESP32_uPesy
+  //#define ESP32_S3
 
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
   #define MODE_Wifi  // Wifi sinon Ethernet
@@ -29,7 +36,7 @@
   #define STOCKAGE
 #endif
 
-#ifdef ESP_TJ_ACTIF  // Chaudiere
+#ifdef ESP_TJ_ACTIF  
   #define ESP32_S3
   #define OTA
   //#define ESP32_Fire2
@@ -62,11 +69,34 @@
 // Adresse par défaut de la GW (B0:CB:D8:E9:0C:74)
 //const uint8_t MAC_GW[] = {0x08, 0xA6, 0xF7, 0x1C, 0xD0, 0x90}; //B0, 0xCB, 0xD8, 0xE9, 0x0C, 0x74};
 
+
+
 typedef struct {
-  uint8_t type;  // 1: Temperature, 2: Batterie
-  //uint16_t value16;
-  float valuef;
+    uint16_t temp;
+    uint16_t ha;
+    uint16_t hr;
+} ValeurTHR;
+
+#define MAX_PAYLOAD 200
+#define MAX_TEMP 30   // taille max autorisée pour l'envoi des temp/humid
+#define ADDRESS 'B'
+#define SERVER_ADD 'H'
+
+typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets de padding ajoutés par le compilateur
+    uint8_t destinataire;
+    uint8_t emetteur;
+    uint8_t longueur;
+    uint8_t code;
+    uint8_t code2;
+    uint8_t payload[MAX_PAYLOAD];
 } Message_EspNow;
+
+template<typename T>
+void payloadWrite(uint8_t* payload, uint8_t& pos, const T& value)
+{
+    memcpy(&payload[pos], &value, sizeof(T));
+    pos += sizeof(T);
+}
 
 //  -------  CONFIGURATION DES PINS
 //  -----------------------------------------------
@@ -108,23 +138,31 @@ const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
     #define PIN_Vbatt 10        // Pin Surveillance Batterie (LiPo/2)
     #define PIN_REVEIL2 11  // Pin d'entrée pour interruption (ex: detecteur)
     #define PIN_OUT0 4     // Power pour alimenter le capteur PIR : 10uA
+    #define PIN_SDA 8
+    #define PIN_SCL 9
   #endif
 
   // Pin Reveil
   #ifdef ESP32_v1
     #define PIN_REVEIL 12  // Pin de réveil (Bouton externe)
     #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
+    #define PIN_SDA 21
+    #define PIN_SCL 22
   #endif
   #ifdef ESP32_Fire2    // Firebeetle
     #define PIN_REVEIL 4  // Pin de réveil (Bouton externe) PIN RTC : 0 à 7
     #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
+    #define PIN_SDA 19
+    #define PIN_SCL 20
   #endif
   #ifdef ESP32_uPesy
     // Nota : BTN : 14 et 25
     #define PIN_Vbatt 35    // Pin Surveillance Batterie (LiPo/)
     #define PIN_OUT0 4     // Power pour alimenter le capteur PIR : 10uA
-    #define PIN_REVEIL 32   // Pin de réveil (Bouton externe)
-    #define PIN_REVEIL2 33  // Pin d'entrée pour interruption (ex: detecteur)
+    #define PIN_REVEIL 25   // Pin de réveil (Bouton externe)
+    #define PIN_REVEIL2 33  // Pin d'entrée pour interruption (ex: detecteur PIR)
+    #define PIN_SDA 21
+    #define PIN_SCL 22
   #endif
 
   // ESP32-C6 : pins restant à 0 au reset et au boot : 2, 3, 4, 6, 7, 14
@@ -190,7 +228,11 @@ void  activation_writelog();
 void     setup_nvs_rtc();
 void enreg_24h( uint8_t veille);
 void printMemoryStatus();
-
+void resetI2C();
+void i2cRecovery();
+void i2cBootRecovery();
+uint16_t selec_graph(uint8_t code, uint16_t hum, uint16_t ha, uint16_t pir);
+void detection_pir();
 
 void passage_deep_sleep(uint64_t temps);
 
@@ -254,8 +296,8 @@ extern TimerHandle_t xTimer_activ_chaud;
 extern RTC_DATA_ATTR uint8_t periode_cycle;
 extern RTC_DATA_ATTR uint8_t mode_rapide;
 
-extern uint16_t compteur_detection;
-extern uint16_t Nb_PI[];
+extern RTC_DATA_ATTR uint16_t compteur_detection;
+extern RTC_DATA_ATTR uint16_t Nb_PI[];
 
 extern float Tint, Text, Humid;
 
@@ -276,14 +318,17 @@ extern unsigned long last_remote_Tint_time, last_remote_Text_time,
     last_remote_heure_time;
 extern RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;
 
-extern RTC_DATA_ATTR float tempI_moy24h, tempE_moy24h, Hum_24h;
-extern RTC_DATA_ATTR uint8_t cpt24_Tint, cpt24_Text, cpt24_Hum;
+extern RTC_DATA_ATTR float tempI_moy24h, tempE_moy24h, Hum_24h, HA_moy24h, PIR_24h;
+extern RTC_DATA_ATTR uint16_t cpt24_Tint, cpt24_Text, cpt24_Hum, cpt24_HA, cpt24_PIR;
+
+extern RTC_DATA_ATTR uint8_t action_envoi;
 
 extern char mdp_routeur[];
 extern RTC_DATA_ATTR int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_sonde;  // millivolt
 extern uint16_t Seuil_batt_arret_ESP;  // millivolt
-extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par bouton_reveil 3:reveil par PIR
+extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR  3:inconnu
+// 4:reveil par bouton_reveil   10:toujours actif
 
 
 extern RTC_DATA_ATTR uint8_t etat_now;

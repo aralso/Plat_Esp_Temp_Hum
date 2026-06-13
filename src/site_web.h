@@ -296,6 +296,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                   16 : duree allumage (sec)<br>
                   17 : action : stockage<br>
                   18 : action : envoi<br>
+                  19 : frequence envoi<br>
                   40 : activ esp_now<br>
                   41 : canal wifi <br>
                   42 : canal wifi prérentiel (sonde)<br>
@@ -339,7 +340,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                   9 : websocket<br>
                   10 : websock id<br>
                   11 : (L)adresse Mac module<br>
-                  12 : adresse Mac dest<br>
+                  12 : adresse Mac Serveur<br>
     
 
             <div>
@@ -832,8 +833,8 @@ const char index_html[] PROGMEM = R"rawliteral(
 
         if (!maj)
         {
-          dessine_graphe("schema", 0, 10, ["#00f808", "#0098f8", "#f84200"]);
-          dessine_graphe("schema2", 3, 10, ["#00f808", "#0098f8", "#f84200"]);
+          dessine_graphe("schema", 0, 100, ["#00f808", "#0098f8", "#f84200"]);
+          dessine_graphe("schema2", 3, 100, ["#00f808", "#0098f8", "#f84200"]);
         }
         maj=1; // => pas de graphique
       }
@@ -879,7 +880,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       function f(num, x) {
         var y = (graphique[num + dataOffset][x]) / divider;
-        if ((num == 2))  y = y/10; // pour les humidite, on divise par 100
+        if ((num == 2))  y = y/5; // pour les humidite, on divise par 50
         return (y);
       }
 
