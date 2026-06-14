@@ -92,6 +92,8 @@ DHT dht[] = {
 float Tint, Text, Humid;
 RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
+RTC_DATA_ATTR int16_t calib_hygro1=300, calib_hygro2=800, calib_temp=1000; // calibration hygrométrie HDC1080
+
 
 
 // ---------FONCTIONS DEFINIES AILLEURS -----------------
@@ -196,6 +198,46 @@ void setup_nvs_rtc()
       preferences_nvs.putUChar("EspN", esp_now_actif);
       Serial.println("Raz Esp_now : inactif");
     }
+
+    // calibration capteur hygrométrie : point 1 à 30% :   15 à 60
+    calib_hygro1 = preferences_nvs.getUShort("CalH1", 0); 
+    if (calib_hygro1 >=150 && calib_hygro1 <= 600)  
+      Serial.printf("Calibration hygrométrie point 1 : %.2f\n\r", calib_hygro1 / 10.0);
+    else {
+      calib_hygro1 = 300;
+      preferences_nvs.putUShort("CalH1", calib_hygro1);
+      Serial.println("Raz Calibration hygrométrie point 1 : 30%");
+    }
+
+    // calibration capteur hygrométrie : point 2 ) 80% : 60 à 100
+    calib_hygro2 = preferences_nvs.getUShort("CalH2", 0);
+    if (calib_hygro2 >=600 && calib_hygro2 <= 1000)
+      Serial.printf("Calibration hygrométrie point 2 : %.2f\n\r", calib_hygro2 / 10.0);
+    else {
+      calib_hygro2 = 800;
+      preferences_nvs.putUShort("CalH2", calib_hygro2);
+      Serial.println("Raz Calibration hygrométrie point 2 : 80%");
+    }
+
+        // calibration capteur température : -
+    calib_temp = preferences_nvs.getUShort("CalTp ", 0); // *100 + 1000
+    if (calib_temp >=800 && calib_temp <= 1200)  
+      Serial.printf("Calibration température : %.2f\n\r", (calib_temp-1000) / 100.0);
+    else {
+      calib_temp = 1000;
+      preferences_nvs.putUShort("CalTp ", calib_temp);
+      Serial.println("Raz Calibration température : +0°C");
+    }
+
+
+    if (esp_now_actif < 2)  
+      Serial.printf("Esp_now actif : %i\n\r", esp_now_actif);
+    else {
+      esp_now_actif = 0;
+      preferences_nvs.putUChar("EspN", esp_now_actif);
+      Serial.println("Raz Esp_now : inactif");
+    }
+
     // seuil batterie basse pour arret ESP
     Seuil_batt_arret_ESP = preferences_nvs.getUShort("SeAr", 100);
     if ( (!Seuil_batt_arret_ESP) || ((Seuil_batt_arret_ESP >= 3000) && (Seuil_batt_arret_ESP <= 3600)))   // 3V à 3,6V
@@ -555,6 +597,22 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
     *valeur = WIFI_CHANNEL;
   }
 
+  if (reg == 46)  // registre 46 : calibration humidité point 1
+  {
+    res = 0;
+    *valeur = calib_hygro1;
+  }
+  if (reg == 47)  // registre 46 : calibration humidité point 2
+  {
+    res = 0;
+    *valeur = calib_hygro2;
+  }
+  if (reg == 48)  // registre 48 : calibration temperature
+  {
+    res = 0;
+    *valeur = calib_temp;
+  }
+
   return res;
 }
 
@@ -658,8 +716,38 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
     }
   }
 
+  if (param == 46)  // registre 46 : calibration hygrométrie 30%
+  {
+    if ((valeurf >=15) && (valeurf <= 60))
+    {
+      res = 0;
+      calib_hygro1 = valeurf*10;
+      preferences_nvs.putUShort("CalH1", calib_hygro1);
+    }
+  }
+  if (param == 47)  // registre 47 : calibration hygrométrie 80%
+  {
+    if ((valeurf >=60) && (valeurf <= 100))
+    {
+      res = 0;
+      calib_hygro2 = valeurf*10;
+      preferences_nvs.putUShort("CalH2", calib_hygro2);
+    }
+  }
+
+  if (param == 48)  // registre 48 : calibration temperature
+  {
+    if ((valeurf >= -2) && (valeurf <= 2))
+    {
+      res = 0;
+      calib_temp = valeurf*100 + 1000;
+      preferences_nvs.putUShort("CalTp ", calib_temp);
+    }
+  }
   return res;
 }
+
+
 
 // type 4
 uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
@@ -797,7 +885,9 @@ uint8_t lecture_Tint(float *mesure, float*humid)
       } else {
         Tint_erreur=0;
       }
+      valeur = valeur + (float)(calib_temp-1000)/100.0;  // calibration temperature
       valeur2 = hdc1080.readHumidity();
+      valeur2 = (valeur2 - (float)calib_hygro1/10.0) * (80.0-30.0) / ((float)calib_hygro2/10.0 - (float)calib_hygro1/10.0) + 30.0;  // calibration hygrométrie
 
     #endif
 

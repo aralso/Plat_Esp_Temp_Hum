@@ -334,6 +334,7 @@ RTC_DATA_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0, HA_moy24h=0, PIR
 RTC_DATA_ATTR uint16_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0, cpt24_HA=0, cpt24_PIR=0;
 RTC_DATA_ATTR uint16_t TextV=0, TintV=0, HumV=0, HAV=0, PIRV=0;  // pour stockage dans la partition log_flashG
 
+
 // OTA
 bool otaEnabled = false;
 unsigned long otaStartTime = 0;
