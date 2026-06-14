@@ -883,7 +883,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       function f(num, x) {
         var y = (graphique[num + dataOffset][x]) / divider;
-        if ((num == 2))  y = y/5; // pour les humidite, on divise par 50
+        if ((num == 1))  y = y/5; // pour les humidite, on divise par 50
         return (y);
       }
 

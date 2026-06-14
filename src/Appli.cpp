@@ -209,9 +209,9 @@ void setup_nvs_rtc()
       Serial.println("Raz Calibration hygrométrie point 1 : 30%");
     }
 
-    // calibration capteur hygrométrie : point 2 ) 80% : 60 à 100
+    // calibration capteur hygrométrie : point 2 ) 80% : 60 à 130
     calib_hygro2 = preferences_nvs.getUShort("CalH2", 0);
-    if (calib_hygro2 >=600 && calib_hygro2 <= 1000)
+    if (calib_hygro2 >=600 && calib_hygro2 <= 1300)
       Serial.printf("Calibration hygrométrie point 2 : %.2f\n\r", calib_hygro2 / 10.0);
     else {
       calib_hygro2 = 800;
@@ -727,7 +727,7 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
   }
   if (param == 47)  // registre 47 : calibration hygrométrie 80%
   {
-    if ((valeurf >=60) && (valeurf <= 100))
+    if ((valeurf >=60) && (valeurf <= 130))
     {
       res = 0;
       calib_hygro2 = valeurf*10;
@@ -885,9 +885,11 @@ uint8_t lecture_Tint(float *mesure, float*humid)
       } else {
         Tint_erreur=0;
       }
-      valeur = valeur + (float)(calib_temp-1000)/100.0;  // calibration temperature
       valeur2 = hdc1080.readHumidity();
+      Serial.printf("lecture HDC1080 - Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
+      valeur = valeur + (float)(calib_temp-1000)/100.0;  // calibration temperature
       valeur2 = (valeur2 - (float)calib_hygro1/10.0) * (80.0-30.0) / ((float)calib_hygro2/10.0 - (float)calib_hygro1/10.0) + 30.0;  // calibration hygrométrie
+      Serial.printf("lecture HDC1080M- Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
 
     #endif
 
@@ -1023,7 +1025,7 @@ uint8_t envoi_valeur()
   uint8_t pos = 3;
   for (uint8_t cpt = 0; cpt < freq_envoi; cpt++)
   {
-    payloadWrite(message.payload, pos, graphique[cpt][0]);
+    payloadWrite(message.payload, pos, graphique[cpt][0] + 1000);  // Temp : Si négatif => ajouter 10°degrés
     payloadWrite(message.payload, pos, graphique[cpt][1]);
   }
 
