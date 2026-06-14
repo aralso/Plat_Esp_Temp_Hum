@@ -1158,8 +1158,14 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
   if ((mac_gw[0] || mac_gw[3] || mac_gw[4]) && (esp_now_actif==1))
   {
     // Initialisation WiFi en mode Station (nécessaire pour ESP-NOW)
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
+
+ // Ne change le mode que si nécessaire
+    if (WiFi.getMode() != WIFI_STA &&  WiFi.getMode() != WIFI_AP_STA)
+    {
+        WiFi.mode(WIFI_STA);
+        Serial.println("WiFi mode set to STA for ESP-NOW");
+    }
+    //WiFi.disconnect();
 
     if (esp_now_init() != ESP_OK) {
       Serial.println("Error initializing ESP-NOW");

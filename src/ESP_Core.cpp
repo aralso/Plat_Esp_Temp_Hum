@@ -4438,7 +4438,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
       *p++ = 0;
       //#ifdef DEBUG
       Serial.println(json_response);
-      delay(200);
+      //delay(200);
       //#endif
       request->send(200, "application/json", json_response);
     } else {
