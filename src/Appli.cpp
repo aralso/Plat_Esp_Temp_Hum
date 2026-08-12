@@ -55,7 +55,7 @@ volatile int ackChannel = -1;       // canal où ça a marché
 void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
 //void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
   void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
 #else
   void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
@@ -449,6 +449,12 @@ void setup_2()
 
 void appli_event_on(systeme_eve_t evt)
 {
+  Serial.printf("Evenement on : %i\n\r", evt.data);
+
+  if (evt.data == 1)  // bouton 1 appuyé
+  {
+      envoi_temp_hygro();
+  }
 }
 
 void detection_pir()
@@ -469,6 +475,7 @@ void appli_event_off(systeme_eve_t evt)
   {
     detection_pir();
   }
+  Serial.printf("Evenement off : %i\n\r", evt.data);
 }
 
 // type 1
@@ -1025,8 +1032,8 @@ uint8_t envoi_valeur()
   uint8_t pos = 3;
   for (uint8_t cpt = 0; cpt < freq_envoi; cpt++)
   {
-    payloadWrite(message.payload, pos, graphique[cpt][0] + 1000);  // Temp : Si négatif => ajouter 10°degrés
-    payloadWrite(message.payload, pos, graphique[cpt][1]);
+    payloadWrite(message.payload, pos, (uint16_t)(graphique[cpt][0] + 1000));  // Temp : Si négatif => ajouter 10°degrés
+    payloadWrite(message.payload, pos, (uint16_t)(graphique[cpt][1]));
   }
 
   // Taille réelle du message envoyé
@@ -1046,6 +1053,38 @@ uint8_t envoi_valeur()
   }
   return 0;
 }
+
+uint8_t envoi_valeur_instant(float Tint, float Humid, float HA)
+{
+  if (!esp_now_actif) return 0;
+
+  Message_EspNow message;
+
+  message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
+  message.emetteur = ADDRESS;
+  message.code = 'C';
+  message.code2 = 'I';
+
+  uint8_t pos = 0;
+  payloadWrite(message.payload, pos, (uint16_t)(Tint * 100));
+  payloadWrite(message.payload, pos, (uint16_t)(Humid * 100));
+  payloadWrite(message.payload, pos, (uint16_t)(HA * 100));
+
+  // Taille réelle du message envoyé
+  message.longueur = 8;
+
+  uint8_t result = envoi_data_gateway(message);
+  return result;
+}
+
+void envoi_temp_hygro()
+{
+  lecture_Tint(&Tint, &Humid);
+  float HA = absoluteHumidity(Tint, Humid);
+  Serial.printf("Temp int:%.2f Humid:%.2f HA:%.2f\n\r", Tint, Humid, HA); 
+  envoi_valeur_instant(Tint, Humid, HA);
+}
+
 
 void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
 {

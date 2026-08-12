@@ -103,13 +103,10 @@ extern "C" {
   // #include "esp_rom/rtc.h"  // si tu le réactives
 }
 
-#include "esp_camera.h"
 #include <Wire.h>
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_camera.h"
-#include "img_converters.h"
-#include "fb_gfx.h"
+//#include "fb_gfx.h"
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
 #include "i2c.h"
@@ -221,7 +218,7 @@ uint8_t DelaiWebsocket = 1;
 uint16_t cpt_ws_timeout=0, cpt_ws_ping=0;
 
 bool force_stay_awake = false; // Flag pour rester éveillé après appui bouton
-uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
+uint8_t type_reveil;  //0:power_on 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
 unsigned long wake_up_time = 0; // Temps de réveil
 
 //x seconds Watchdog 
@@ -347,7 +344,7 @@ TimerHandle_t debounceTimer;
 #define BTN_COUNT 1  // Nombre de boutons
 volatile int lastButtonState[BTN_COUNT] = {HIGH};  // États précédents
 volatile int stableButtonState[BTN_COUNT] = {HIGH}; // États stables validés
-volatile int pressCounter[BTN_COUNT] = {0}; // Compteurs de validation
+int pressCounter[BTN_COUNT] = {0}; // Compteurs de validation
 
 const int BTN_PIN[BTN_COUNT] = {14};  // Pins des boutons
 
@@ -917,7 +914,7 @@ void taskHandler(void *parameter) {
                     appli_event_off(evt);
                     break;
 
-                case EVENT_GPIO_ON:  // 0:reprise secteur, 1:fin intrusion, 2:autoprotect, 3:marche/arret
+                case EVENT_GPIO_ON:  // 0:BTN0 1:BTN1
                     Serial.printf("GPIO:on:%i\n\r", evt.data);
                     appli_event_on(evt);
                     break;
@@ -1439,7 +1436,7 @@ void setup()
         err_ip=1;
         Serial.println("pas de routeur");
       }
-      Serial.printf("routeur:%s  mdp:%s\n\r", nom_routeur, mdp_routeur);
+      Serial.printf("routeur:%s  \n\r", nom_routeur);
 
       // adresse IP
       uint32_t storedIP = preferences_nvs.getULong("ipAdd", 0);
@@ -1535,14 +1532,21 @@ void setup()
     sleep_time = (uint64_t)periode_cycle * 1000000;
     passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
   }
-  else if (type_reveil < 4) // Poweron(0), Timer(1), Inconnu(3)
+  else 
   {
-    event_cycle();
-    uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
-    if (mode_rapide==12)
-    sleep_time = (uint64_t)periode_cycle * 1000000;
-    passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
-
+    if (type_reveil == 1)  event_cycle(); // réveil par timer
+    else 
+    {
+      envoi_temp_hygro();
+    }
+    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // pull_up => 1, appui => 0
+    if ((type_reveil != 4) || (etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
+    {
+      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+      if (mode_rapide==12)
+      sleep_time = (uint64_t)periode_cycle * 1000000;
+      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+    }
   }
 
 
@@ -3591,9 +3595,9 @@ void debounceCallback(TimerHandle_t xTimer)
 
         // Incrémenter/décrémenter le compteur en fonction de l'état lu
         if (buttonState == LOW) {
-            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i]++;
+            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i] ++;
         } else {
-            if (pressCounter[i] > 0) pressCounter[i]--;
+            if (pressCounter[i] > 0) pressCounter[i] --;
         }
 
         // Vérification si l'état a changé et atteint un seuil
@@ -4907,7 +4911,8 @@ uint16_t decod_asc16 (uint8_t * index)
 	return val;
 }
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+//#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status)
 #else
 void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status)

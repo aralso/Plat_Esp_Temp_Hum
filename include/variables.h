@@ -24,8 +24,8 @@
   //#define PIR_ACTIF
   
   //#define ESP32_Fire2
-  #define ESP32_uPesy
-  //#define ESP32_S3
+  //#define ESP32_uPesy
+  #define ESP32_S3
 
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
   #define MODE_Wifi  // Wifi sinon Ethernet
@@ -233,6 +233,8 @@ void i2cRecovery();
 void i2cBootRecovery();
 uint16_t selec_graph(uint8_t code, uint16_t hum, uint16_t ha, uint16_t pir);
 void detection_pir();
+uint8_t envoi_valeur_instant(float Tint, float Humid, float HA);
+void envoi_temp_hygro();
 
 void passage_deep_sleep(uint64_t temps);
 
@@ -286,53 +288,52 @@ constexpr int NB_Val_Graph = 99;
 #define MAX_DUMP 6900              // 600 + 1050 car par graphique
 extern char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
 
-extern RTC_DATA_ATTR uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
+extern  uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
 
 extern uint8_t protocole;
 extern QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
 extern uint16_t erreur_queue;
 extern TimerHandle_t debounceTimer;
 extern TimerHandle_t xTimer_activ_chaud;
-extern RTC_DATA_ATTR uint8_t periode_cycle;
-extern RTC_DATA_ATTR uint8_t mode_rapide;
+extern  uint8_t periode_cycle;
+extern  uint8_t mode_rapide;
 
-extern RTC_DATA_ATTR uint16_t compteur_detection;
-extern RTC_DATA_ATTR uint16_t Nb_PI[];
+extern  uint16_t compteur_detection;
+extern  uint16_t Nb_PI[];
 
 extern float Tint, Text, Humid;
 
 extern uint8_t cpt_securite;
 extern uint8_t WIFI_CHANNEL;
-extern RTC_DATA_ATTR uint8_t last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
+extern  uint8_t last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
 extern uint8_t rtc_valid;  // 0:cold reset  1:reset apres deep sleep
-extern RTC_DATA_ATTR uint16_t
-    cpt_cycle_batt;                   // Compteur cycles pour mesure batterie
+extern  uint16_t cpt_cycle_batt;                   // Compteur cycles pour mesure batterie
 extern volatile uint8_t ackReceived;  // global pour indiquer que le peer a acké
 extern volatile int ackChannel;       // canal où ça a marché
 extern uint8_t mode_reseau;
-extern RTC_DATA_ATTR uint8_t init_time;
+extern  uint8_t init_time;
 extern float heure;
-extern RTC_DATA_ATTR uint8_t skip_graph;
+extern  uint8_t skip_graph;
 
 extern unsigned long last_remote_Tint_time, last_remote_Text_time,
     last_remote_heure_time;
-extern RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;
+extern  uint16_t err_Tint, err_Text, err_Heure;
 
-extern RTC_DATA_ATTR float tempI_moy24h, tempE_moy24h, Hum_24h, HA_moy24h, PIR_24h;
-extern RTC_DATA_ATTR uint16_t cpt24_Tint, cpt24_Text, cpt24_Hum, cpt24_HA, cpt24_PIR;
+extern  float tempI_moy24h, tempE_moy24h, Hum_24h, HA_moy24h, PIR_24h;
+extern  uint16_t cpt24_Tint, cpt24_Text, cpt24_Hum, cpt24_HA, cpt24_PIR;
 
-extern RTC_DATA_ATTR uint8_t action_envoi;
+extern  uint8_t action_envoi;
 
 extern char mdp_routeur[];
-extern RTC_DATA_ATTR int16_t graphique[NB_Val_Graph][NB_Graphique];
+extern  int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_sonde;  // millivolt
 extern uint16_t Seuil_batt_arret_ESP;  // millivolt
 extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR  3:inconnu
 // 4:reveil par bouton_reveil   10:toujours actif
 
 
-extern RTC_DATA_ATTR uint8_t etat_now;
-extern RTC_DATA_ATTR uint8_t Nb_jours_Batt_log;
+extern  uint8_t etat_now;
+extern  uint8_t Nb_jours_Batt_log;
 
 extern  bool force_stay_awake;
 extern unsigned long wake_up_time;  // Temps de réveil/dernière activité
