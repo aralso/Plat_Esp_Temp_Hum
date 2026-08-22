@@ -26,8 +26,8 @@
   //#define PIR_ACTIF
   
   //#define ESP32_Fire2
-  //#define ESP32_uPesy
-  #define ESP32_S3
+  #define ESP32_uPesy
+  //#define ESP32_S3
 
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
   #define MODE_Wifi  // Wifi sinon Ethernet
@@ -48,6 +48,7 @@
   //#define WatchDog
 #endif
 
+#define BTN_COUNT 2  // Nombre de boutons
 
 //#define Temp_int_DHT22
 //#define Temp_int_DS18B20
@@ -80,7 +81,6 @@ typedef struct {
 } ValeurTHR;
 
 #define MAX_PAYLOAD 200
-#define MAX_TEMP 30   // taille max autorisée pour l'envoi des temp/humid
 #define ADDRESS 'B'
 #define SERVER_ADD 'H'
 
@@ -153,6 +153,9 @@ extern uint8_t Capt_nb_val_max;
 extern uint8_t Capt_seuil_temp;
 extern uint16_t Capt_tps_total_max;
 extern uint8_t delai_detection;
+extern uint16_t calib_temp;
+extern uint16_t calib_hygro1;
+extern uint16_t calib_hygro2;
 
 extern const size_t PARAMS_COUNT;
 extern Param PARAMS[];

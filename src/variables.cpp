@@ -38,11 +38,11 @@ Param PARAMS[] = {
   // 43:puissance wifi, 44:mode wifi
   
   // IPv4 addresses stored as four bytes
-  {"ipAdd", 50, IP, 0, 0xFFFFFFFFu, 0, 0, nullptr, local_ip, 4},
-  {"ipGat", 51, IP, 0, 0xFFFFFFFFu, 0, 0, nullptr, gateway, 4},
-  {"ipSub", 52, IP, 0, 0xFFFFFFFFu, 0, 0, nullptr, subnet, 4},       // 255.255.255.0
-  {"ipDNS", 53, IP, 0, 0xFFFFFFFFu, 0, 0, nullptr, primaryDNS, 4},   // 8.8.8.8
-  {"ipDNS2", 54, IP, 0, 0xFFFFFFFFu, 0, 0, nullptr, secondaryDNS, 4},// 8.8.4.4
+  {"ipAdd", 50, IP, 0, 0xFFFFFFFFu, 192, 0, nullptr, local_ip, 4},
+  {"ipGat", 51, IP, 0, 0xFFFFFFFFu, 192, 0, nullptr, gateway, 4},
+  {"ipSub", 52, IP, 0, 0xFFFFFFFFu, 255, 0, nullptr, subnet, 4},       // 255.255.255.0
+  {"ipDNS", 53, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, primaryDNS, 4},   // 8.8.8.8
+  {"ipDNS2", 54, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, secondaryDNS, 4},// 8.8.4.4
   {"Rout", 55, STR, 0, 0, 0, 0,  "rout", nom_routeur, 16},                // nom routeur  
   {"Mdp", 56, STR, 0, 0, 0, 0, "mdp", mdp_routeur, 16},                
   {"WSOn", 57, U8, 0, 2, 1, 0, nullptr, &websocket_on, 0},            // 0 ou 1
@@ -55,6 +55,9 @@ Param PARAMS[] = {
   {"CaNb", 62, U8, 1, 12, 2, 0,nullptr, &Capt_nb_val_max, 0},             // 0:inactif 1:à chaque lecture, 2:2val max
   {"CaTps", 63, U16, 10, 600, 300, 0,nullptr, &Capt_tps_total_max, 0},    // tps envoi max en minutes : 10min à 10h
   {"DelD", 64, U8, 1, 60, 10, 0, nullptr, &delai_detection, 0},        // registre 14 : delai entre detections (s)
+  {"CalT", 65, U16, 1, 5000, 1000, 0, nullptr, &calib_temp, 0},        // registre 65 : calibration_temperature (0:pas de calibration, 1:calibration)
+  {"CalH30", 66, U16, 100, 500, 300, 0, nullptr, &calib_hygro1, 0},        // registre 66 : calibration_hygro30 (0:pas de calibration, 1:calibration)
+  {"CalH80", 67, U16, 600, 1000, 800, 0, nullptr, &calib_hygro2, 0},        // registre 67 : calibration_hygro80 (0:pas de calibration, 1:calibration)
 
 };
 

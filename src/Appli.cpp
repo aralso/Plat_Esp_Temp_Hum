@@ -112,7 +112,7 @@ DHT dht[] = {
 float Tint, Text, Humid;
 RTC_NOINIT_ATTR uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
-RTC_NOINIT_ATTR int16_t calib_hygro1=300, calib_hygro2=800, calib_temp=1000; // calibration hygrométrie HDC1080
+RTC_NOINIT_ATTR uint16_t calib_hygro1=300, calib_hygro2=800, calib_temp=1000; // calibration hygrométrie HDC1080
 
 
 
@@ -177,7 +177,7 @@ void setup_1()
 
     Tint = 15;
     #ifdef Temp_int_HDC1080
-      delay(200);
+      //delay(200);
       //i2cBootRecovery();
       Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
 
@@ -300,10 +300,13 @@ void setup_appli()
     if (type_reveil == 1)  event_cycle(); // réveil par timer
     else 
     {
-      envoi_temp_hygro();
+      if (log_detail>=2) Serial.printf("milli H1: %lu\n", millis());
+      envoi_temp_hygro();  // 30ms
+       if (log_detail>=2) Serial.printf("milli H3: %lu\n", millis());
     }
-    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // pull_up => 1, appui => 0
-    if ((type_reveil != 4) || (etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
+    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 0, appui => 1
+    if (log_detail>=2)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
+    if ((type_reveil != 4) || (!etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
     {
       uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
       if (mode_rapide==12)
@@ -692,10 +695,10 @@ uint8_t lecture_Tint(float *mesure, float*humid)
         Tint_erreur=0;
       }
       valeur2 = hdc1080.readHumidity();
-      Serial.printf("lecture HDC1080 - Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
+      if (log_detail>=3) Serial.printf("lecture HDC1080 - Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
       valeur = valeur + (float)(calib_temp-1000)/100.0;  // calibration temperature
       valeur2 = (valeur2 - (float)calib_hygro1/10.0) * (80.0-30.0) / ((float)calib_hygro2/10.0 - (float)calib_hygro1/10.0) + 30.0;  // calibration hygrométrie
-      Serial.printf("lecture HDC1080M- Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
+      if (log_detail>=3) Serial.printf("lecture HDC1080M- Temp: %.2f Humid:%.2f\n\r", valeur, valeur2);
 
     #endif
 
@@ -707,7 +710,7 @@ uint8_t lecture_Tint(float *mesure, float*humid)
 
   if (valeur > 50) Tint_erreur = 2;
   if (valeur < -20) Tint_erreur = 3;
-  Serial.printf("lecture Tint : %.2f Humid:%.2f Tint_erreur:%i\n\r", valeur, valeur2, Tint_erreur);
+  if (log_detail>=3) Serial.printf("lecture Tint : %.2f Humid:%.2f Tint_erreur:%i\n\r", valeur, valeur2, Tint_erreur);
   if (Tint_erreur) {
     valeur = 20.0;
     valeur2 = 50.0;
@@ -815,14 +818,14 @@ uint8_t fetch_internet_temp() {
 
 uint8_t enreg_valeur()
 {
-  unsigned long currentMin = millis()/600000;  // en minutes
+  unsigned long currentMillis = millis();  // en minutes
 
   if (!esp_now_actif) return 1;
 
   if (cpt_nb_val >= NB_VAL_TAB) cpt_nb_val = 0;
   valTemp[cpt_nb_val] = (uint16_t)((Tint+40) * 100);
   valHum[cpt_nb_val] = (uint16_t)(Humid * 100);
-  valEcart[cpt_nb_val] = currentMin - Mesure_min_prec;
+  valEcart[cpt_nb_val] = (currentMillis - Mesure_min_prec)/60000;
   
   cpt_nb_val++;
   uint8_t envoi=0;
@@ -830,7 +833,7 @@ uint8_t enreg_valeur()
   if (cpt_nb_val >= Capt_nb_val_max) envoi=1;
   if (freq_envoi)  // envoi si temps total dépassé
   {
-    if (currentMin - envoi_min_prec >= Capt_tps_total_max) envoi=1;
+    if ((currentMillis - envoi_min_prec)/60000 >= Capt_tps_total_max) envoi=1;
   }
 
   if (envoi)
@@ -872,7 +875,7 @@ uint8_t enreg_valeur()
         return 1;
     }
     cpt_nb_val=0;
-    envoi_min_prec = currentMin;  // mettre à jour le temps du dernier envoi
+    envoi_min_prec = currentMillis;  // mettre à jour le temps du dernier envoi
     return 0;
   }
   return 0;
@@ -904,15 +907,17 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA)
 void envoi_temp_hygro()
 {
   lecture_Tint(&Tint, &Humid);
+  if (log_detail>=2) Serial.printf("milli H2: %lu\n", millis());
+
   float HA = absoluteHumidity(Tint, Humid);
-  Serial.printf("Temp int:%.2f Humid:%.2f HA:%.2f\n\r", Tint, Humid, HA); 
+  if (log_detail>=2) Serial.printf("Temp int:%.2f Humid:%.2f HA:%.2f\n\r", Tint, Humid, HA); 
   envoi_valeur_instant(Tint, Humid, HA);
 }
 
 
 void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
 {
-  unsigned long currentMin = millis()/600000;  // en minutes
+  unsigned long currentMillis = millis();  
   
     uint8_t i;
     // chaque 5/15 minutes
@@ -993,7 +998,7 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
           Serial.printf("MMesure périodique toutes les %i valeurs (cpt_mesure=%i)\n", freq_envoi, cpt_mesure);
           cpt_mesure=0;
           enreg_valeur();  // enreg puis envoi  par ESP-NOW
-          Mesure_min_prec = currentMin;
+          Mesure_min_prec = currentMillis;
           TintPrec = Tint;
         }
       }
@@ -1002,12 +1007,12 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
         uint8_t enreg=0;
         if (Tint - TintPrec > Capt_seuil_temp) enreg=1;
         if (TintPrec - Tint > Capt_seuil_temp) enreg=1;
-        if ((currentMin - Mesure_min_prec) > Capt_tps_max) enreg=1;
+        if ((currentMillis - Mesure_min_prec)/60000 > Capt_tps_max) enreg=1;
         if (enreg) {
           Serial.printf("Envoi : %i minutes (cpt_nb_val=%i)\n", Capt_tps_max, cpt_nb_val);
           enreg_valeur();  // enreg puis envoi  par ESP-NOW
           TintPrec = Tint;
-          Mesure_min_prec = currentMin;
+          Mesure_min_prec = currentMillis;
         }
       }
     }

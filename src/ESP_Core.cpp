@@ -5,7 +5,7 @@ TODO :
 A compiler pour une firebeetle esp32-C6 ou uPesy vroom
 Avantages Platformio : Ifdef, intellisense, temps compil, backtrace
 
-v1.1 08/2026 nouveau core, trame temp variable
+v1.1 08/2026 nouveau core
 
 Graphique 1 : par cycle : G1:temp_int(vert) G2:temp ext(bleu) G3:Nbdetect par cycle
 Graphique 2 : par 24h :   G1:Temp int(vert) G2:temp_ext(bleu) G3:Nb detect/24h
@@ -350,12 +350,11 @@ unsigned long otaStartTime = 0;
 volatile unsigned long lastInterruptTime = 0; 
 
 TimerHandle_t debounceTimer;
-#define BTN_COUNT 1  // Nombre de boutons
 volatile int lastButtonState[BTN_COUNT] = {HIGH};  // États précédents
 volatile int stableButtonState[BTN_COUNT] = {HIGH}; // États stables validés
-int pressCounter[BTN_COUNT] = {0}; // Compteurs de validation
+int pressCounter[BTN_COUNT] = {0, 0}; // Compteurs de validation
 
-const int BTN_PIN[BTN_COUNT] = {14};  // Pins des boutons
+const int BTN_PIN[BTN_COUNT] = {PIN_REVEIL, PIN_REVEIL2};  // Pins des boutons
 
 
 #define configASSERT_CODE( x, code ) if( ( x ) == 0 ) { \
@@ -365,7 +364,7 @@ const int BTN_PIN[BTN_COUNT] = {14};  // Pins des boutons
     Serial.println(code);                               \
     while(1) { }                                         \
 }
-// utiliser comme cela : configASSERT_CODE(ptr != NULL, 3);   // code 3 = pointeur NULL
+// A utiliser comme cela : configASSERT_CODE(ptr != NULL, 3);   // code 3 = pointeur NULL
 
 uint8_t resetReason0;
 esp_sleep_wakeup_cause_t source_reveil;
@@ -433,7 +432,7 @@ uint16_t trouve_indexG (uint8_t page);
 char* requete_status_appli(char* p);
 void init_ram_variables_appli();
 uint8_t connectWiFiRapide();
-
+void setup_appli();
 
 
 
@@ -588,7 +587,10 @@ void vTimerWatchdogCallback(TimerHandle_t xTimer)
 
 // timer debounce pour lire toutes les entrées
 void IRAM_ATTR onButtonInterrupt() {
-    xTimerStartFromISR(debounceTimer, NULL);  // Un seul timer pour tous les boutons
+    // The GPIO interrupt can occur before the rest of setup has completed.
+    if (debounceTimer != NULL) {
+      xTimerStartFromISR(debounceTimer, NULL);  // Un seul timer pour tous les boutons
+    }
 }
 
 
@@ -1015,6 +1017,59 @@ static IPAddress defaultIPAddressForKey(const char* key)
   return IPAddress(0, 0, 0, 0);
 }
 
+// verification que les paramètres sont compris dans la plage, sinon, valeur par défaut
+uint8_t verif_read(Param &p)
+{
+  switch (p.type) {
+    case U8: {
+      uint8_t v = *(uint8_t*)p.var;
+      if (v < p.min16 || v > p.max16) {
+        *(uint8_t*)p.var = (uint8_t)p.def_u16;
+        Serial.printf("****RAZ parametre %s : defaut %u\n", p.key, *(uint8_t*)p.var);
+        return 1;
+      }
+      return 0;
+    }
+
+    case U16: {
+      uint16_t v = *(uint16_t*)p.var;
+      if (v < p.min16 || v > p.max16) {
+        *(uint16_t*)p.var = (uint16_t)p.def_u16;
+        Serial.printf("****RAZ parametre %s : defaut %u\n", p.key, *(uint16_t*)p.var);
+        return 1;
+      }
+      return 0;
+    }
+
+    case IP: {
+      uint32_t v = *((uint32_t*)p.var);
+      if (v < p.min16 || v > p.max16) {
+        IPAddress ip = defaultIPAddressForKey(p.key);
+        storeIPAddress((uint8_t*)p.var, ip);
+        Serial.printf("****RAZ parametre %s : defaut %s\n", p.key, ip.toString().c_str());
+        return 1;
+      }
+      return 0;
+    }
+
+    case STR: {
+      char* ptr = (char*)p.var;
+      if (strlen(ptr) == 0 || strlen(ptr) >= p.size) {
+        strncpy(ptr, p.def_str, p.size - 1);
+        ptr[p.size - 1] = '\0';
+        Serial.printf("****RAZ parametre %s : defaut %s\n", p.key, ptr);
+        return 1;
+      }
+      return 0;
+    }
+
+    default:
+      break; 
+  }
+
+  return 1; // Type inconnu
+}
+
 
 uint8_t nvs_read(Param &p) {
 
@@ -1153,21 +1208,6 @@ void resetI2C() {
   Wire.setClock(100000);  // stable (100 kHz conseillé)
 }
 
-
-void i2cBootRecovery() {
-  pinMode(PIN_SDA, INPUT_PULLUP);
-  pinMode(PIN_SCL, INPUT_PULLUP);
-
-  delay(50);
-
-  Wire.end(); // sécurité
-
-  // optionnel mais utile si bus bloqué
-  i2cRecovery();  // ou simple reset clock SCL
-
-  delay(20);
-}
-
 void i2cRecovery() {
   pinMode(PIN_SDA, OUTPUT);
   pinMode(PIN_SCL, OUTPUT);
@@ -1188,16 +1228,34 @@ void i2cRecovery() {
   Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
 }
 
+void i2cBootRecovery() {
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  pinMode(PIN_SCL, INPUT_PULLUP);
+
+  delay(50);
+
+  Wire.end(); // sécurité
+
+  // optionnel mais utile si bus bloqué
+  i2cRecovery();  // ou simple reset clock SCL
+
+  delay(20);
+}
+
+
 void setup()
 {
-  
+  uint32_t t = millis();
+  if (boot_rapide > 3) boot_rapide=0;
+  if (log_detail > 4) log_detail=0;
+
   if (boot_rapide < 2) delay(3000);
 
   // Cause reset :
   resetReason0 = (uint8_t) esp_reset_reason();
   Serial.begin(115200);
   
-  Serial.printf("milli A: %lu  boot_rapide:%i log_detail:%i\n", millis(), boot_rapide, log_detail);
+  if (log_detail>=1) Serial.printf("milli A: %lu  boot_rapide:%i log_detail:%i\n", t, boot_rapide, log_detail);  // 39ms
 
   // Cause réveil du deep/light_sleep (undefined si pas de reveil deep/light sleep)
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause(); // 2:ext0(1pin) 3:Ext1(2pins) 7:GPIO 4:Timer
@@ -1223,12 +1281,12 @@ void setup()
     {
       reveil = 4;
       uint64_t wakeup_pins = esp_sleep_get_ext1_wakeup_status();
-      Serial.printf("wakeup_pins: %016llX\n", wakeup_pins);
+      if (log_detail>=3) Serial.printf("wakeup_pins: %016llX\n", wakeup_pins);
       if (wakeup_pins & (1ULL << PIN_REVEIL)) {
-          Serial.println("Réveil par PIN1");
+          if (log_detail>=3) Serial.println("Réveil par PIN1");
           force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
           wake_up_time = millis() + 30000; // Prolonger si Bouton réveil est appuyé
-          Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
+          if (log_detail>=3) Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
       }
 
       if (wakeup_pins & (1ULL << PIN_REVEIL2)) {
@@ -1247,6 +1305,7 @@ void setup()
   resetREASON0[sizeof(resetREASON0) - 1] = '\0'; // Garantit la terminaison null
 
   // determination si la RTC reste valide (apres un reveil deepsleep)
+  //Serial.printf("rtc_magic: %08X\n", rtc_magic);
   if (rtc_magic != 0x05343211 )  
   {
     // RTC non valide = cold reset
@@ -1276,7 +1335,7 @@ void setup()
   {
     if (reveil==1) type_reveil=1; // Timer 15 min
     else if (reveil==2) type_reveil=2; // PIR
-    else type_reveil=3;           // inconnu
+    else type_reveil=3;           // inconnu-watchdog-Exception
   }
   #ifdef ESP_TJ_ACTIF
     type_reveil = 10;  // power on, toujours actif
@@ -1338,11 +1397,12 @@ void setup()
     cpt_securite = 10;
   #endif
 
+  if (log_detail>=2) Serial.printf("milli E: %lu\n", millis());
 
-  Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
+  if (log_detail>=3) Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
   setup_0();   //  --- valeur initiales des graphiques
 
-  if (type_reveil>=4) // bouton ou toujours actif
+  //if (type_reveil>=4) // bouton ou toujours actif
   {
     // ---------  Creation des taches et des queues -------------------
 
@@ -1364,6 +1424,11 @@ void setup()
     #endif
 
     // ------  Configuration des PIN sorties       -------------------------------
+
+    // Create this timer before attaching the GPIO interrupts. A GPIO transition
+    // during setup must not submit a command with a null timer handle.
+    debounceTimer = xTimerCreate("debounce", pdMS_TO_TICKS(DEBOUNCE_INTERVAL), pdFALSE, 0, debounceCallback);
+    if (debounceTimer == NULL)  Serial.println("Erreur : timer debounceTimer non créé !");
 
     pinMode(PIN_OUT0, OUTPUT);
     // Configurer l'interruption GPIO sur GPIO 18 (ex: bouton poussoir)
@@ -1414,60 +1479,68 @@ void setup()
   }
 
   // ------  NVS Eeprom  ---------------------
-    preferences_nvs.begin("NVS_App", false);
+  // lecture nvs : 9 millisecondes pour 37 paramètres
+  preferences_nvs.begin("NVS_App", false);
 
-  if ((type_reveil>=4) || (!type_reveil))
+  // incrémentation nb de reset en nvs
+  nb_reset = preferences_nvs.getUShort("nb_reset", 0);
+  nb_reset++;
+  preferences_nvs.putUShort("nb_reset", nb_reset);
+
+
+  if (!rtc_valid) // si rtc non valide (cold reset) => lecture de tous les paramètres nvs
   {
-
-
-    if (type_reveil>=4)
-    {
-      // lecture nb de reset en nvs
-      nb_reset = preferences_nvs.getUShort("nb_reset", 0);
-      nb_reset++;
-      preferences_nvs.putUShort("nb_reset", nb_reset);
-
-      if (!rtc_valid) // si rtc non valide (cold reset) => lecture de tous les paramètres nvs
+    if (log_detail>=4) Serial.printf("NVS : nb de parametres : %d\n\r", PARAMS_COUNT);
+    // lecture de tous les paramètres nvs uint8_t, uint16_t, uint32_t(IP) et string
+    for (size_t i = 0; i < PARAMS_COUNT; ++i) {
+      nvs_read(PARAMS[i]);
+      if (i==1)  // log_detail
       {
-        if (log_detail>=4) Serial.printf("NVS : nb de parametres : %d\n\r", PARAMS_COUNT);
-        // lecture de tous les paramètres nvs uint8_t, uint16_t, uint32_t(IP) et string
-        for (size_t i = 0; i < PARAMS_COUNT; ++i) {
-          nvs_read(PARAMS[i]);
-          if (i==1)  // log_detail
-          {
-              apply_log_detail(log_detail);
-              Serial.printf("log_detail:%i\n\r", log_detail);
-          }
-        }
+          apply_log_detail(log_detail);
+          Serial.printf("log_detail:%i\n\r", log_detail);
       }
+    }
+    log_detail=4;
+    apply_log_detail(log_detail);
+  }
+  else  // vérification de cohérence des parametres nvs
+  {
+    for (size_t i = 0; i < PARAMS_COUNT; ++i) {
+      verif_read(PARAMS[i]);      
+    }
+  }
 
 
-      #ifdef NO_RESEAU
-        mode_reseau=0;
-      #endif
+  #ifdef NO_RESEAU
+    mode_reseau=0;
+  #endif
+
+  uint8_t err_ip=0;
+  if (!nom_routeur[0]) {
+    err_ip=1;
+    Serial.println("pas de routeur");
+  }
+
+  if ((!local_ip[0]) || (!gateway[0]))  err_ip=1;
+  if ((!subnet[0]) || (!primaryDNS[0]) || (!secondaryDNS[0]))  err_ip=1;
+
+  if (err_ip) { 
+    mode_reseau=11;  // si une info manquante => activation en Access_point
+    Serial.printf("Err=>activ access point %d %d %d %d %d\n\r", local_ip[0], gateway[0], subnet[0], primaryDNS[0], secondaryDNS[0]);
+  }
+  #ifdef Wifi_AP
+    mode_reseau=11;
+  #endif
 
 
-      uint8_t err_ip=0;
-      if (!nom_routeur[0]) {
-        err_ip=1;
-        Serial.println("pas de routeur");
-      }
-
-      if ((!local_ip[0]) || (!gateway[0]))  err_ip=1;
-      if ((!subnet[0]) || (!primaryDNS[0]) || (!secondaryDNS[0]))  err_ip=1;
-
-      if (err_ip) { 
-        mode_reseau=11;  // si une info manquante => activation en Access_point
-        Serial.printf("Err=>activ access point %d %d %d %d %d\n\r", local_ip[0], gateway[0], subnet[0], primaryDNS[0], secondaryDNS[0]);
-      }
-      #ifdef Wifi_AP
-        mode_reseau=11;
-      #endif
-
+  if ((type_reveil>=3) || (!type_reveil))
+  {
+    if (type_reveil>=3)
+    {
     }
 
     // lecture du Bouton BTN0 : si actif pendant 1 secondes => Wifi_AP
-    int buttonState = digitalRead(BTN_PIN[0]);
+    /*int buttonState = digitalRead(BTN_PIN[0]);
     if (!buttonState)
     {
       delay(1000);
@@ -1478,15 +1551,17 @@ void setup()
         Serial.println("Appui BTN0 => Wifi_AP");
         mode_reseau=11;
       }
-    }
+    }*/
   }
+  if (log_detail>=2) Serial.printf("milli F: %lu\n", millis());
 
-  setup_1();  // --------------   initialisation sonde temperature------------
+  setup_1();  // --------------   initialisation sonde temperature--10ms----------
 
    if (log_detail>=2) Serial.printf("milli G: %lu\n", millis());
 
    setup_appli();
 
+   if (log_detail>=2) Serial.printf("milli G2: %lu\n", millis());
 
   // -------------- partition "log_flash" custom  pour Write-log -------------------
 
@@ -1506,7 +1581,10 @@ void setup()
       delay(500 + random(1, 1001) );
     }
 
+    if (log_detail>=2) Serial.println("AAA");
     writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
+    if (log_detail>=2) Serial.println("BBB");
+
     if (boot_rapide < 2) delay(500);
 
     if (log_detail>=4) 
@@ -1532,7 +1610,7 @@ void setup()
 
   // -------------   Configuration des timers FreeRTOS (max 49 jours)   --------------------
 
-  // Timer à l'initialisation pour masquer 10 secondes les envois au transmetteur et init heure, puis 30 sec
+  // Timer à l'initialisation pour masquer 10 secondes  init heure, puis 30 sec
   xTimer_Init= xTimerCreate ("Init", (uint32_t)attente_init*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerInitCallback);
   if (xTimer_Init == NULL)  Serial.println("Erreur : timer xTimer_Init non créé !");
 
@@ -1543,10 +1621,6 @@ void setup()
   // Timer chaque 24heures
   xTimer_24H= xTimerCreate ("24H", (uint32_t)24*60*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer24HCallback);
   if (xTimer_24H == NULL)  Serial.println("Erreur : timer xTimer_24h non créé !");
-
-  // Timer pour éviter les faux rebonds des boutons
-  debounceTimer = xTimerCreate("debounce", pdMS_TO_TICKS(DEBOUNCE_INTERVAL), pdFALSE, 0, debounceCallback);
-  if (debounceTimer == NULL)  Serial.println("Erreur : timer debounceTimer non créé !");
 
   //xTimerStart(debounceTimer, 100);  // lecture initiale pour lire l'état des boutons
 
@@ -4156,10 +4230,9 @@ void passage_deep_sleep(uint64_t temps)
     return;
   }
 
-  Serial.printf("PIN_REVEIL state = %d %d\n", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
-  Serial.flush();
+  if (log_detail>=3) Serial.printf("PIN_REVEIL state = %d %d\n", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
 
-  Serial.printf("Passage deep sleep pour %llu\n", (unsigned long long)sleep_us);
+  if (log_detail>=3) Serial.printf("Passage deep sleep pour %llu milis:%lu\n", (unsigned long long)sleep_us, millis());
 
   esp_sleep_enable_timer_wakeup(temps);
 
@@ -4193,7 +4266,7 @@ void passage_deep_sleep(uint64_t temps)
       //esp_sleep_enable_gpio_wakeup();
       esp_sleep_enable_ext1_wakeup(config.pin_bit_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
 
-      Serial.println("Going to sleep...");
+      if (log_detail>=3)Serial.println("Going to sleep...");
   #endif
 
   #ifdef ESP32_S3   // S3
@@ -4238,12 +4311,15 @@ void passage_deep_sleep(uint64_t temps)
     esp_deep_sleep_enable_gpio_wakeup( 1ULL << PIN_REVEIL, ESP_GPIO_WAKEUP_GPIO_LOW);
   #endif
   
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
+  // Do not call the WiFi shutdown API when the radio was never enabled.
+  if (WiFi.getMode() != WIFI_OFF) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
 
-  Serial.printf("GPIO state: %d\n", gpio_get_level((gpio_num_t)PIN_REVEIL));
+  if (log_detail>=1) Serial.printf("GPIO state: %d milis:%lu\n", gpio_get_level((gpio_num_t)PIN_REVEIL), millis());
   Serial.flush();
-  delay(500);
+  ///delay(10);
   yield();
 
   esp_deep_sleep_start();

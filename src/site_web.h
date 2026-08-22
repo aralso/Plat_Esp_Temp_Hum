@@ -303,14 +303,14 @@ const char index_html[] PROGMEM = R"rawliteral(
                   43 : puissance wifi<br>
                   44 : wifi_sleep (0,1,2)<br>
                   45 : (L)rssi wifi<br>
-                  46 : calib hygro30<br>
-                  47 : calib hygro80<br>
-                  48 : calib température<br>
                   60 : Capt:Periode max(min)<br>                  
                   61 : Capt:Seuil temp(0.01°C)<br>                  
                   62 : Capt envoi:Nb val max<br>                  
                   63 : Capt envoi:Tps total(min)<br>                  
                   64 : pause entre detections (sec)<br>
+                  65 : calib température<br>
+                  66 : calib hygro30<br>
+                  67 : calib hygro80<br>
                   <br>
 
               <div class="input-group" id="set-regT-group">
