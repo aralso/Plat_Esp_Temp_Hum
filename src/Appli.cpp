@@ -5,6 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+v1.4 08/2026 nouveau core, trame temp variable
+v1.3 05/2026 board upesy, humidite absolue, envoi vers serveur
+v1.2 03/2026 Surveillance batterie, log 24h en eeprom, OTA à la demande
+v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
+*/
+
 #include "variables.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -20,35 +27,48 @@
 extern WiFiClient client;
 extern Preferences preferences_nvs;  // Déclaration externe
 
+RTC_NOINIT_ATTR unsigned long envoi_min_prec=0, Mesure_min_prec=0;
+RTC_NOINIT_ATTR float TintPrec=20;
 
 
 // variables Detection PIR
-RTC_DATA_ATTR uint16_t compteur_detection=0;
-RTC_DATA_ATTR uint16_t compteur_detection_1h=0;
+RTC_NOINIT_ATTR uint16_t compteur_detection=0;
+RTC_NOINIT_ATTR uint16_t compteur_detection_1h=0;
 
-RTC_DATA_ATTR uint8_t pause_detection;
-RTC_DATA_ATTR unsigned long last_detection_time=0;
+RTC_NOINIT_ATTR uint8_t pause_detection;
+RTC_NOINIT_ATTR unsigned long last_detection_time=0;
 
-RTC_DATA_ATTR uint16_t Nb_PI[NB_VAL_TAB];
+RTC_NOINIT_ATTR uint16_t Nb_PI[NB_VAL_TAB];
 
-RTC_DATA_ATTR uint8_t  WIFI_CHANNEL;
-RTC_DATA_ATTR uint8_t etat_now;
-RTC_DATA_ATTR uint16_t Seuil_batt_sonde;  // millivolt
-RTC_DATA_ATTR uint16_t Seuil_batt_arret_ESP;
-RTC_DATA_ATTR uint8_t Nb_jours_Batt_log;
-RTC_DATA_ATTR uint16_t prolong_veille;
-RTC_DATA_ATTR uint8_t action_stockage;
-RTC_DATA_ATTR uint8_t action_envoi, freq_envoi, cpt_envoi;
+RTC_NOINIT_ATTR uint8_t  WIFI_CHANNEL;
+RTC_NOINIT_ATTR uint8_t etat_now;
+RTC_NOINIT_ATTR uint16_t Seuil_batt_sonde;  // millivolt
+RTC_NOINIT_ATTR uint8_t Nb_jours_Batt_log;
+RTC_NOINIT_ATTR uint8_t freq_envoi, cpt_mesure, cpt_nb_val;
+RTC_NOINIT_ATTR uint16_t valTemp[NB_VAL_TAB], valHum[NB_VAL_TAB], valEcart[NB_VAL_TAB];
 
-RTC_DATA_ATTR uint8_t compteur_graph;
-RTC_DATA_ATTR uint16_t compteur_24h;
+RTC_NOINIT_ATTR uint8_t compteur_graph;
+RTC_NOINIT_ATTR uint16_t compteur_24h;
+
+RTC_NOINIT_ATTR float PIR_24h=0;
+RTC_NOINIT_ATTR uint16_t cpt24_PIR=0, PIRV=0;
+
+RTC_NOINIT_ATTR uint8_t Capt_tps_max;
+RTC_NOINIT_ATTR uint8_t Capt_seuil_temp;
+RTC_NOINIT_ATTR uint8_t Capt_nb_val_max;
+RTC_NOINIT_ATTR uint16_t Capt_tps_total_max;
+RTC_NOINIT_ATTR uint8_t delai_detection;
+
+RTC_NOINIT_ATTR uint8_t etat_ESP_stop;  // 0:normal 1:arrêté pour batterie faible (deepsleep longue duree)
+RTC_NOINIT_ATTR uint8_t cpt24h_batt;
 
 
-
-RTC_DATA_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
+RTC_NOINIT_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
 
+extern uint16_t nb_err_reseau;
+extern  uint16_t TextV, TintV, HumV, HAV;  // pour stockage dans la partition log_flashG
 
 
 //void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
@@ -90,9 +110,9 @@ DHT dht[] = {
 
 // Temperature intérieure
 float Tint, Text, Humid;
-RTC_DATA_ATTR uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
+RTC_NOINIT_ATTR uint16_t err_Tint, err_Text, err_Heure;  // compteurs d'erreurs
 
-RTC_DATA_ATTR int16_t calib_hygro1=300, calib_hygro2=800, calib_temp=1000; // calibration hygrométrie HDC1080
+RTC_NOINIT_ATTR int16_t calib_hygro1=300, calib_hygro2=800, calib_temp=1000; // calibration hygrométrie HDC1080
 
 
 
@@ -149,189 +169,6 @@ void setup_0()
   }*/
 }
 
-// setup : lecture nvs_rtc au power on
-void setup_nvs_rtc()
-{
-  // si rtc non valide, on recharge les valeurs pour rtc, qui doivent rester en RTC_DATA_ATTR
-    action_stockage = preferences_nvs.getUChar("AcSt", 0);
-    if (action_stockage < 2)
-      Serial.printf("Action stockage : %i\n\r", action_stockage);
-    else {
-      action_stockage = 0;
-      preferences_nvs.putUChar("AcSt", 0);
-      Serial.println("Raz action stockage: 0");
-    }
-
-    action_envoi = preferences_nvs.getUChar("AcEn", 0);
-    if (action_envoi < 2)         
-      Serial.printf("Action envoi : %i\n\r", action_envoi);
-    else {
-      action_envoi = 0;
-      preferences_nvs.putUChar("AcEn", 0);
-      Serial.println("Raz action envoi: 0");
-    }   
-
-    freq_envoi = preferences_nvs.getUChar("FrEn", 0);
-    if (freq_envoi && (freq_envoi <= MAX_TEMP))         
-      Serial.printf("Frequence envoi : %i\n\r", freq_envoi);
-    else {
-      freq_envoi = 1;
-      preferences_nvs.putUChar("FrEn", 1);
-      Serial.println("Raz frequence envoi: 1");
-    }   
-
-
-    Nb_jours_Batt_log = preferences_nvs.getUChar("FrBL", 100);
-    if ((Nb_jours_Batt_log > 15)) {  // 0 à 15
-      Nb_jours_Batt_log = 2;  // Freq : tous les2 jours   0:inactif
-      preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
-      Serial.printf("Raz Freq log Batt: %i\n\r", Nb_jours_Batt_log);
-    }
-    else  Serial.printf("Freq log batt: %i\n\r", Nb_jours_Batt_log);
-
-    // esp_now_actif
-    esp_now_actif = preferences_nvs.getUChar("EspN", 10);
-    if (esp_now_actif < 2)  
-      Serial.printf("Esp_now actif : %i\n\r", esp_now_actif);
-    else {
-      esp_now_actif = 0;
-      preferences_nvs.putUChar("EspN", esp_now_actif);
-      Serial.println("Raz Esp_now : inactif");
-    }
-
-    // calibration capteur hygrométrie : point 1 à 30% :   15 à 60
-    calib_hygro1 = preferences_nvs.getUShort("CalH1", 0); 
-    if (calib_hygro1 >=150 && calib_hygro1 <= 600)  
-      Serial.printf("Calibration hygrométrie point 1 : %.2f\n\r", calib_hygro1 / 10.0);
-    else {
-      calib_hygro1 = 300;
-      preferences_nvs.putUShort("CalH1", calib_hygro1);
-      Serial.println("Raz Calibration hygrométrie point 1 : 30%");
-    }
-
-    // calibration capteur hygrométrie : point 2 ) 80% : 60 à 130
-    calib_hygro2 = preferences_nvs.getUShort("CalH2", 0);
-    if (calib_hygro2 >=600 && calib_hygro2 <= 1300)
-      Serial.printf("Calibration hygrométrie point 2 : %.2f\n\r", calib_hygro2 / 10.0);
-    else {
-      calib_hygro2 = 800;
-      preferences_nvs.putUShort("CalH2", calib_hygro2);
-      Serial.println("Raz Calibration hygrométrie point 2 : 80%");
-    }
-
-        // calibration capteur température : -
-    calib_temp = preferences_nvs.getUShort("CalTp ", 0); // *100 + 1000
-    if (calib_temp >=800 && calib_temp <= 1200)  
-      Serial.printf("Calibration température : %.2f\n\r", (calib_temp-1000) / 100.0);
-    else {
-      calib_temp = 1000;
-      preferences_nvs.putUShort("CalTp ", calib_temp);
-      Serial.println("Raz Calibration température : +0°C");
-    }
-
-
-    if (esp_now_actif < 2)  
-      Serial.printf("Esp_now actif : %i\n\r", esp_now_actif);
-    else {
-      esp_now_actif = 0;
-      preferences_nvs.putUChar("EspN", esp_now_actif);
-      Serial.println("Raz Esp_now : inactif");
-    }
-
-    // seuil batterie basse pour arret ESP
-    Seuil_batt_arret_ESP = preferences_nvs.getUShort("SeAr", 100);
-    if ( (!Seuil_batt_arret_ESP) || ((Seuil_batt_arret_ESP >= 3000) && (Seuil_batt_arret_ESP <= 3600)))   // 3V à 3,6V
-        Serial.printf("Seuil batterie arret ESP: %i\n\r", Seuil_batt_arret_ESP);
-    else {
-      Seuil_batt_arret_ESP = 3300;
-      preferences_nvs.putUShort("SeAr", Seuil_batt_arret_ESP);
-      Serial.printf("Raz seuil batterie arret ESP: %i\n\r", Seuil_batt_arret_ESP);
-    }
-
-
-    // pause entre 2 detections PIR
-    pause_detection = preferences_nvs.getUChar("PauD", 0);
-    if ((pause_detection < 1) || (pause_detection > 60)) {  // de 1 à 60 secondes
-      pause_detection = 8;
-      preferences_nvs.putUChar("PauD", pause_detection);
-      Serial.printf("Raz pause detection : %i sec\n\r", pause_detection);
-    }
-    else  Serial.printf("Pause entre detections : %i sec\n\r", pause_detection);
-
-
-    // periode du cycle : lecture Temp ext par internet
-    periode_cycle = preferences_nvs.getUChar("cycle", 0);  // de 10 a 120
-    if ((periode_cycle < 2) || (periode_cycle > 60)) {
-      periode_cycle = 15;
-      preferences_nvs.putUChar("cycle", periode_cycle);
-      Serial.printf("Raz periode cycle : val par defaut %imin\n\r", periode_cycle);
-    }
-    else Serial.printf("periode cycle : %imin\n", periode_cycle);
-
-
-    mode_rapide = preferences_nvs.getUChar("Rap", 0);  // mode=12 => mode_rapide
-    if ((mode_rapide) && (mode_rapide != 12)) {
-      mode_rapide=0;
-      preferences_nvs.putUChar("Rap", 0);
-      Serial.println("Raz Mode rapide:0");
-    }
-    else
-      Serial.printf("Mode rapide : %i\n\r", mode_rapide);
-
-    // Initialisation variable adresse Mac Gateway
-    String storedString = preferences_nvs.getString("MacC", "");
-
-    if (parseMacString(storedString.c_str(), mac_gw))
-    {
-      Serial.printf("MAC serveur : %02X:%02X:%02X:%02X:%02X:%02X\n",
-        mac_gw[0], mac_gw[1], mac_gw[2],
-        mac_gw[3], mac_gw[4], mac_gw[5] );
-    }
-    else {  Serial.println("MAC serveur absent ou invalide");  }
-
-
-    // Initialisation du channel préférentiel wifi-esp-now
-    WIFI_CHANNEL = preferences_nvs.getUChar("WifiC", 0);
-    if ((WIFI_CHANNEL < 1) || (WIFI_CHANNEL > 13)) {
-      WIFI_CHANNEL = 6;  // 1 à 13
-      preferences_nvs.putUChar("WifiC", WIFI_CHANNEL);
-      Serial.printf("Raz Wifi Channel: %i\n", WIFI_CHANNEL);
-    }
-    else
-      Serial.printf("Wifi channel preferentiel: %i\n", WIFI_CHANNEL);
-    last_wifi_channel = WIFI_CHANNEL;
-
-    // Initialisation du temps de reveil pour la sonde, si reveil uart/web
-    prolong_veille = preferences_nvs.getUShort("PVei", 0);
-    if (prolong_veille>=15 && prolong_veille<=600) {
-      Serial.printf("Temps reveil : %i sec\n", prolong_veille);
-    }
-    else
-    {  
-      prolong_veille = 60;
-      preferences_nvs.putUShort("PVei", prolong_veille);
-      Serial.printf("Raz temps reveil : %i sec\n", prolong_veille);
-    }
-
-
-    Seuil_batt_sonde = preferences_nvs.getUShort("SeBa", 0);
-    if ((Seuil_batt_sonde < 1800) || (Seuil_batt_sonde >4500)) {  // 1,8V à 4,5V
-      Seuil_batt_sonde = 3800;  // Seuil 3.8V
-      preferences_nvs.putUShort("SeBa", Seuil_batt_sonde);
-      Serial.printf("Raz batterie sonde: %i\n\r", Seuil_batt_sonde);
-    }
-    else  Serial.printf("Seuil batterie sonde: %i\n\r", Seuil_batt_sonde);
-
-
-}
-
-// setup : lecture nvs
-void setup_nvs()
-{
-
-
-
-}
 
 
 // setup apres la lecture nvs, avant démarrage reseau
@@ -445,7 +282,42 @@ void setup_2()
   #endif
 }
 
+void setup_appli()
+{
+  
+  // -------------  Capteur/Detecteur : stockage ou envoie infos à la gateway -------------------
 
+  if (type_reveil ==2)   // Detection PIR
+  {
+    detection_pir();
+    uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+    if (mode_rapide==12)
+    sleep_time = (uint64_t)periode_cycle * 1000000;
+    passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+  }
+  else 
+  {
+    if (type_reveil == 1)  event_cycle(); // réveil par timer
+    else 
+    {
+      envoi_temp_hygro();
+    }
+    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // pull_up => 1, appui => 0
+    if ((type_reveil != 4) || (etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
+    {
+      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+      if (mode_rapide==12)
+      sleep_time = (uint64_t)periode_cycle * 1000000;
+      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+    }
+  }
+
+}
+
+void init_ram_variables_appli()
+{
+  cpt24h_batt=6;   // compteur de jours
+}
 
 void appli_event_on(systeme_eve_t evt)
 {
@@ -468,6 +340,118 @@ void detection_pir()
     }
 }
 
+
+// log batterie et Temp moyenne toutes les 24h.
+void enreg_24h( uint8_t veille)
+{
+    // Log toutes les jours/semaines : nb d'erreurs wifi et batteries
+  if (Nb_jours_Batt_log)
+  {
+    float vbatt = readBatteryVoltage();
+    Serial.printf("Tension Batterie : %.2f V\n", vbatt);
+
+    if ((Seuil_batt_arret_ESP) && (vbatt < Seuil_batt_arret_ESP) && (vbatt > 2400))
+    {
+      writeLog('S', 7, 0, 0, "Batt Stp");
+      etat_ESP_stop = 1;
+    }
+    cpt24h_batt++;
+    if (cpt24h_batt >= Nb_jours_Batt_log)  // log chaque X jour 
+    {
+      cpt24h_batt=0;
+
+      //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n", vbatt, Vbatt_Th);
+      if (veille)
+      {
+        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, 0, "24H_Res");
+      }
+      else
+      {
+        if (nb_err_reseau>255) nb_err_reseau=255;
+        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, (uint8_t)nb_err_reseau, "24H_Res");
+        nb_err_reseau=0;
+      }
+    }
+  }
+
+  // erreurs Tint, Text, heure
+  if (err_Tint>254) err_Tint=255;
+  if (err_Tint)
+            log_erreur(Code_erreur_Tint, err_Tint,0);
+  if (err_Text>254) err_Text=255;
+  if (err_Text)
+            log_erreur(Code_erreur_Text, err_Text,0);
+  if (err_Heure>254) err_Heure=255;
+  if (err_Heure)
+            log_erreur(Code_erreur_Heure, err_Heure,0);
+  err_Tint=0;
+  err_Text=0;
+  err_Heure=0;
+
+  // graphique des temperatures quotidiennes
+  uint16_t tempI=1, tempE=1, Hum=1, HA=1, PIR=1;
+  if (cpt24_Tint)  tempI = (uint16_t)(tempI_moy24h/cpt24_Tint*10);
+  if (cpt24_Text)  tempE = (uint16_t)(tempE_moy24h/cpt24_Text*10);
+  if (cpt24_Hum) Hum = (uint16_t)(Hum_24h/cpt24_Hum*10);
+  if (cpt24_HA) HA = (uint16_t)(HA_moy24h/cpt24_HA*10);
+  if (cpt24_PIR) PIR = (uint8_t)(PIR_24h/cpt24_PIR*10);
+  if (!tempI) tempI=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!tempE) tempE=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!Hum) Hum=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!HA) HA=1;  // permet d'afficher quand meme le point sur le graphique
+  if (!PIR) PIR=1;  // permet d'afficher quand meme le point sur le graphique
+  TextV = tempE;
+  TintV = tempI;
+  HumV = Hum;
+  HAV = HA;
+  PIRV = PIR;
+
+  //Serial.printf("Temp24h I:%.2f %i E:%.2f %i C:%.2f %i\n\r", tempI_moy24h, cpt24_Tint, tempE_moy24h, cpt24_Text, cout_moy24h, cpt24_Cout);
+
+  tempI_moy24h=0;
+  tempE_moy24h=0;
+  Hum_24h=0;
+  HA_moy24h=0;
+  PIR_24h=0;
+  cpt24_Tint=0;
+  cpt24_Text=0;
+  cpt24_Hum=0;
+  cpt24_HA=0;
+  cpt24_PIR=0;
+
+  uint8_t i;
+  for (i = NB_Val_Graph - 1; i; i--) {
+    graphique[i][3] = graphique[i - 1][3];
+    graphique[i][4] = graphique[i - 1][4];
+    graphique[i][5] = graphique[i - 1][5];
+  }
+  graphique[0][3] = tempI;
+  graphique[0][4] = selec_graph(GRAPH2, HA, Hum, PIR);
+  graphique[0][5] = selec_graph(GRAPH3, HA, Hum, PIR);  
+
+  Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i HA:%i\n\r", tempI, tempE, Hum, HA);
+  writeLogG('G', tempI, HA, Hum); // Enregistrment en Flash des 3 valeurs du graphique
+
+  if (action_envoi && esp_now_actif)
+  {
+    Message_EspNow message;
+
+    message.destinataire = SERVER_ADD & 0x80;  // 0x80 = message hexa
+    message.emetteur = ADDRESS;
+    message.code = 'C';
+    message.code2 = 'J';
+
+    uint8_t pos = 0;
+    payloadWrite(message.payload, pos, tempI);
+    payloadWrite(message.payload, pos, Hum);
+    message.longueur = 5 + pos - 3;
+
+    uint8_t result = envoi_data_gateway(message);
+
+  }      
+}
+
+
 void appli_event_off(systeme_eve_t evt)
 {
   // Detecteur PIR activé
@@ -476,6 +460,13 @@ void appli_event_off(systeme_eve_t evt)
     detection_pir();
   }
   Serial.printf("Evenement off : %i\n\r", evt.data);
+}
+
+char* requete_status_appli(char *p)
+{
+  p += sprintf(p, "\"PIR_D\":%i,", compteur_detection); // derniere 15min
+  p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
+  return p;
 }
 
 // type 1
@@ -540,84 +531,14 @@ uint8_t requete_GetReg_appli(int reg, float *valeur)
 {
   uint8_t res=1;
 
-  if (reg == 9)  // registre 9 : Seuil batterie sonde
-  {
-    res = 0;
-    *valeur = Seuil_batt_sonde;
-  }
-  if (reg == 10)  // registre 10 : Nb de jours Log batterie
-  {
-    res = 0;
-    *valeur = Nb_jours_Batt_log;
-  }
-  if (reg == 14)  // registre 14 : pause entre detections (sec)
-  {
-    res = 0;
-    *valeur = pause_detection;
-  }
-  if (reg == 15)  // registre 15 : seuil batterie basse arret ESP
-  {
-    res = 0;
-    *valeur = Seuil_batt_arret_ESP;
-  }
-  if (reg == 16)  // registre 16 : duree allumage
-  {
-    res = 0;
-    *valeur = prolong_veille;
-  }
-  if (reg == 17)  // registre 17 : action stockage
-  {
-    res = 0;
-    *valeur = action_stockage;
-  }
-  if (reg == 18)  // registre 18 : action envoi
-  {
-    res = 0;
-    *valeur = action_envoi;
-  }
-  if (reg == 19)  // registre 19 : frequence envoi
-  {
-    res = 0;
-    *valeur = freq_envoi;
-  }
-  if (reg == 40)  // registre 40 : activation esp_now
-  {
-    res = 0;
-    *valeur = esp_now_actif;
-  }
   
-  if (reg == 41)  // registre 41 : canal WiFi actuel
+  if (reg == 41)  // registre 41 : canal WiFi actuel (dynamic)
   {
     res = 0;
     uint8_t current_channel;
-    #ifdef ESP_VEILLE
-      current_channel = last_wifi_channel;
-    #else
-      wifi_second_chan_t second;
-      esp_wifi_get_channel(&current_channel, &second);
-    #endif
+    wifi_second_chan_t second;
+    esp_wifi_get_channel(&current_channel, &second);
     *valeur = (float)current_channel;
-  }
-  if (reg == 42)  // registre 42 : canal WiFi preferentiel
-  {
-    res = 0;
-    *valeur = WIFI_CHANNEL;
-  }
-
-  if (reg == 46)  // registre 46 : calibration humidité point 1
-  {
-    res = 0;
-    *valeur = calib_hygro1;
-  }
-  if (reg == 47)  // registre 46 : calibration humidité point 2
-  {
-    res = 0;
-    *valeur = calib_hygro2;
-  }
-  if (reg == 48)  // registre 48 : calibration temperature
-  {
-    res = 0;
-    *valeur = calib_temp;
   }
 
   return res;
@@ -629,128 +550,6 @@ uint8_t requete_SetReg_appli(int param, float valeurf)
   int16_t valeur = int16_t(round(valeurf));
   uint8_t res = 1;
 
-  if (param == 9)  // registre 9 : Seuil batterie sonde
-  {
-    if ((valeur >=1800 ) && (valeur <= 4500)) {
-      res = 0;
-      Seuil_batt_sonde = valeur;
-      preferences_nvs.putUShort("SeBa", Seuil_batt_sonde);
-    }
-  }
-
-
-  if (param == 10)  // registre 10 : Nb jours log batterie
-  {
-    if (valeur <= 15) {
-      res = 0;
-      Nb_jours_Batt_log = valeur;
-      preferences_nvs.putUChar("FrBL", Nb_jours_Batt_log);
-    }
-  }
-  if (param == 14)  // registre 14 : pause entre detections (sec)
-  {
-    if ((valeur) && (valeur <= 60)) {
-      res = 0;
-      pause_detection = valeur;
-      preferences_nvs.putUChar("PauD", pause_detection);
-    }
-  }
-  if (param == 15)  // registre 15 : seuil batterie basse arret ESP
-  {
-    if ( (!valeur) ||((valeur >= 3000) && (valeur <= 3600))) {  // 0 (inactif) ou entre 3V et 3,6V
-      res = 0;
-      Seuil_batt_arret_ESP = valeur;
-      preferences_nvs.putUShort("SeAr", Seuil_batt_arret_ESP);
-    }
-  }
-  if (param == 16)  // registre 16 : duree allumage
-  {
-    if ((valeur>=15) && (valeur <= 600)) {  // de 15 sec à 10 minutes
-      res = 0;
-      prolong_veille = valeur;
-      preferences_nvs.putUShort("PVei", prolong_veille);
-    }
-  }
-  if (param == 17)  // registre 17 : action stockage
-  {    if ((valeur == 0) || (valeur == 1))
-    {      res = 0;
-      action_stockage = valeur;
-      preferences_nvs.putUChar("AcSt", action_stockage);
-    }
-  }
-  if (param == 18)  // registre 18 : action envoi      
-  {    
-    if ((valeur == 0) || (valeur == 1))
-    {      
-      res = 0;
-      action_envoi = valeur;
-      preferences_nvs.putUChar("AcEn", action_envoi);
-    }
-  }
-  if (param == 19)  // registre 19 : frequence envoi
-  {    
-    if (valeur && (valeur <= MAX_TEMP))         
-    {     
-      res = 0;
-      freq_envoi = valeur;
-      preferences_nvs.putUChar("FrEn", freq_envoi);
-    }
-  }
-  if (param == 40)  // registre 40 : activation esp_now
-  {
-    if ((valeur == 0) || (valeur == 1))
-    {
-      res = 0;
-      esp_now_actif = valeur;
-      preferences_nvs.putUChar("EspN", esp_now_actif);
-    }
-  }
-  if (param == 41)  // registre 41 : last_wifi_channel
-  {
-    if ((valeur) && (valeur <= 13))
-    {
-      res = 0;
-      last_wifi_channel = valeur;
-    }
-  }
-  if (param == 42)  // registre 42 : canal wifi preferentiel
-  {
-    if ((valeur) && (valeur <= 13))
-    {
-      res = 0;
-      WIFI_CHANNEL = valeur;
-      preferences_nvs.putUChar("WifiC", WIFI_CHANNEL);
-    }
-  }
-
-  if (param == 46)  // registre 46 : calibration hygrométrie 30%
-  {
-    if ((valeurf >=15) && (valeurf <= 60))
-    {
-      res = 0;
-      calib_hygro1 = valeurf*10;
-      preferences_nvs.putUShort("CalH1", calib_hygro1);
-    }
-  }
-  if (param == 47)  // registre 47 : calibration hygrométrie 80%
-  {
-    if ((valeurf >=60) && (valeurf <= 130))
-    {
-      res = 0;
-      calib_hygro2 = valeurf*10;
-      preferences_nvs.putUShort("CalH2", calib_hygro2);
-    }
-  }
-
-  if (param == 48)  // registre 48 : calibration temperature
-  {
-    if ((valeurf >= -2) && (valeurf <= 2))
-    {
-      res = 0;
-      calib_temp = valeurf*100 + 1000;
-      preferences_nvs.putUShort("CalTp ", calib_temp);
-    }
-  }
   return res;
 }
 
@@ -763,12 +562,12 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
   int paramV = var.toInt();
   // valeur limité a 50 caractères
   
-  if (paramV == 11)  // registre 11 : adresse MAC ce module
+  if (paramV == 61)  // registre 61 : adresse MAC ce module
   {
     res = 0;
     strncpy(valeur, WiFi.macAddress().c_str(), 18);
   }
-  if (paramV == 12)  // registre 12 : adresse MAC destinataire
+  if (paramV == 62)  // registre 62 : adresse MAC Gateway
   {
     res = 0;
     snprintf(valeur, 18,
@@ -797,7 +596,7 @@ uint8_t requete_Set_String_appli(int param, const char *texte)
   uint8_t res=1;
   IPAddress ip;
 
-    if (param == 12)  // registre 12 : adresse Mac dest
+    if (param == 62)  // registre 62 : adresse Mac Gateway
     {
       if (!parseMacString(texte, mac_gw))
       {
@@ -1014,42 +813,67 @@ uint8_t fetch_internet_temp() {
   return res;
 }
 
-uint8_t envoi_valeur()
+uint8_t enreg_valeur()
 {
-  if (!esp_now_actif || freq_envoi<1 || freq_envoi>MAX_TEMP) return 1;
+  unsigned long currentMin = millis()/600000;  // en minutes
 
-  Message_EspNow message;
+  if (!esp_now_actif) return 1;
 
-  message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-  message.emetteur = ADDRESS;
-  message.code = 'C';
-  message.code2 = 'T';
-
-  message.payload[0] = freq_envoi;
-  message.payload[1] = (skip_graph* periode_cycle) & 0xFF;
-  message.payload[2] = ((skip_graph* periode_cycle) >> 8) & 0xFF;
+  if (cpt_nb_val >= NB_VAL_TAB) cpt_nb_val = 0;
+  valTemp[cpt_nb_val] = (uint16_t)((Tint+40) * 100);
+  valHum[cpt_nb_val] = (uint16_t)(Humid * 100);
+  valEcart[cpt_nb_val] = currentMin - Mesure_min_prec;
   
-  uint8_t pos = 3;
-  for (uint8_t cpt = 0; cpt < freq_envoi; cpt++)
+  cpt_nb_val++;
+  uint8_t envoi=0;
+
+  if (cpt_nb_val >= Capt_nb_val_max) envoi=1;
+  if (freq_envoi)  // envoi si temps total dépassé
   {
-    payloadWrite(message.payload, pos, (uint16_t)(graphique[cpt][0] + 1000));  // Temp : Si négatif => ajouter 10°degrés
-    payloadWrite(message.payload, pos, (uint16_t)(graphique[cpt][1]));
+    if (currentMin - envoi_min_prec >= Capt_tps_total_max) envoi=1;
   }
 
-  // Taille réelle du message envoyé
-  message.longueur = 5 + pos - 3;
+  if (envoi)
+  {
 
-  uint8_t result = envoi_data_gateway(message);
+    Message_EspNow message;
+
+    message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
+    message.emetteur = ADDRESS;
+    message.code = 'C';
+    message.code2 = 'T';
+
+    message.payload[0] = cpt_nb_val;
+    
+    uint8_t pos = 1;
+    for (uint8_t cpt = 0; cpt < cpt_nb_val; cpt++)
+    {
+      payloadWrite(message.payload, pos, valTemp[cpt]);  
+      payloadWrite(message.payload, pos, valHum[cpt]);
+      payloadWrite(message.payload, pos, valEcart[cpt]);
+    }
+    // Taille réelle du message envoyé
+    message.longueur = 5 + pos - 3;
+
+    uint8_t result = envoi_data_gateway(message);
 
 
-  if (result == ESP_OK) {
-      Serial.printf("✅ %d valeurs Temp-HA-HR envoyées\n",  message.payload[0]);
-  } else {
-      Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
-      activation_writelog();
-      writeLog('E', 8, graphique[0][0]/100, graphique[0][1]/100, "Esp_now");
+    if (result == ESP_OK) {
+        Serial.printf("✅ %d valeurs Temp-HR-Ecart envoyées\n",  message.payload[0]);
+        for (uint8_t cpt = 0; cpt < message.payload[0]; cpt++)
+        {
+          Serial.printf("   %.2f°C %.2f%% %d min\n", valTemp[cpt]/100.0-40, valHum[cpt]/100.0, valEcart[cpt]);
+        }
+    } else {
+        Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
+        activation_writelog();
+        writeLog('E', 8, valTemp[0]/10,  valHum[0]/10, "Esp_now");
 
-      return 1;
+        return 1;
+    }
+    cpt_nb_val=0;
+    envoi_min_prec = currentMin;  // mettre à jour le temps du dernier envoi
+    return 0;
   }
   return 0;
 }
@@ -1088,7 +912,8 @@ void envoi_temp_hygro()
 
 void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
 {
-
+  unsigned long currentMin = millis()/600000;  // en minutes
+  
     uint8_t i;
     // chaque 5/15 minutes
     for (i = NB_VAL_TAB - 1; i; i--) {
@@ -1160,11 +985,30 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
 
     if (action_envoi) 
     {
-      cpt_envoi++;
-      if (cpt_envoi >= freq_envoi)  // envoi toutes les x valeurs (x*skip_graph*15 minutes)
+      if (freq_envoi)  // envoi periodique activé
       {
-        cpt_envoi=0;
-        envoi_valeur();  // envoi  par ESP-NOW
+        cpt_mesure++;
+        if (cpt_mesure >= freq_envoi)  // mesure toutes les x valeurs (x*skip_graph*15 minutes)
+        {
+          Serial.printf("MMesure périodique toutes les %i valeurs (cpt_mesure=%i)\n", freq_envoi, cpt_mesure);
+          cpt_mesure=0;
+          enreg_valeur();  // enreg puis envoi  par ESP-NOW
+          Mesure_min_prec = currentMin;
+          TintPrec = Tint;
+        }
+      }
+      else // envoi lorsque les valeurs évoluent
+      {
+        uint8_t enreg=0;
+        if (Tint - TintPrec > Capt_seuil_temp) enreg=1;
+        if (TintPrec - Tint > Capt_seuil_temp) enreg=1;
+        if ((currentMin - Mesure_min_prec) > Capt_tps_max) enreg=1;
+        if (enreg) {
+          Serial.printf("Envoi : %i minutes (cpt_nb_val=%i)\n", Capt_tps_max, cpt_nb_val);
+          enreg_valeur();  // enreg puis envoi  par ESP-NOW
+          TintPrec = Tint;
+          Mesure_min_prec = currentMin;
+        }
       }
     }
     tempI_moy15m = 0;

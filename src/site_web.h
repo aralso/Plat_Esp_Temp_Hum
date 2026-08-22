@@ -278,12 +278,12 @@ const char index_html[] PROGMEM = R"rawliteral(
                   </div>
               </div>
               <hr style="width:100px">
-              <p> 1 : mode reseau (11-12:AP, 13:routeur, 14:filaire)<br>
-                  2 : Nb_reset<br>
-                  3 : reset-13<br>
-                  4 : Periode cycle<br>
+              <p> 1 : log detail : 0:rien 4:max
+                  2 :mode reseau (11-12:AP, 13:routeur, 14:filaire)<br>
+                  3 : Nb_reset<br>
+                  4 : reset-13<br>
                   5 : cycle rapide - 0(h)-12(min)<br>
-                  6 : log detail : 0:rien 4:max<br>
+                  6 : Periode cycle<br>
                   7 : délai écoute websocket<br>
                   8 : Skip graph : 1 valeur sur X<br>
                   9 : Seuil batt sonde<br>
@@ -291,12 +291,12 @@ const char index_html[] PROGMEM = R"rawliteral(
                   11: réglage date<br>
                   12: réglage heure<br>
                   13 : activation OTA<br>
-                  14 : pause entre detections (sec)<br>
                   15 : seuil bas arret ESP<br>
                   16 : duree allumage (sec)<br>
                   17 : action : stockage<br>
                   18 : action : envoi<br>
-                  19 : frequence envoi<br>
+                  19 : frequence mesure temp:0:var >1:fixe<br>
+                  20 : boot_rapide<br>
                   40 : activ esp_now<br>
                   41 : canal wifi <br>
                   42 : canal wifi prérentiel (sonde)<br>
@@ -306,6 +306,11 @@ const char index_html[] PROGMEM = R"rawliteral(
                   46 : calib hygro30<br>
                   47 : calib hygro80<br>
                   48 : calib température<br>
+                  60 : Capt:Periode max(min)<br>                  
+                  61 : Capt:Seuil temp(0.01°C)<br>                  
+                  62 : Capt envoi:Nb val max<br>                  
+                  63 : Capt envoi:Tps total(min)<br>                  
+                  64 : pause entre detections (sec)<br>
                   <br>
 
               <div class="input-group" id="set-regT-group">

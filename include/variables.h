@@ -2,6 +2,8 @@
 
 #define VARIABLES_H
 
+#include <stddef.h>  // for size_t
+#include <Arduino.h>  // for IPAddress, String types
 
 // variables externes
 
@@ -90,6 +92,70 @@ typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets
     uint8_t code2;
     uint8_t payload[MAX_PAYLOAD];
 } Message_EspNow;
+
+// structure des paramètres 
+typedef enum ParamType {
+  U8,
+  U16,
+  IP,
+  STR,
+  U32
+} ParamType;
+
+typedef struct Param {
+  const char* key;
+  uint8_t order;
+  ParamType type;
+ 
+  uint32_t min16;   // numeric lower bound (used for U8/U16/U32)
+  uint32_t max16;   // numeric upper bound
+ 
+  uint32_t def_u16; // default numeric value (fits U8/U16/U32)
+  uint8_t rtc_valid;  // 0: not valid, 1: valid
+  const char* def_str;
+  void* var;
+  uint8_t size;      // taille du buffer (0 pour U8/U16)
+} Param;
+
+// Forward declarations for variables used in PARAMS
+extern uint8_t log_detail;
+extern uint8_t mode_reseau;
+extern uint16_t nb_reset;
+extern  uint8_t mode_rapide;
+extern  uint8_t periode_cycle;
+extern uint8_t DelaiWebsocket;
+extern  uint8_t skip_graph;
+extern uint16_t Seuil_batt_sonde;
+extern  uint8_t Nb_jours_Batt_log;
+extern uint8_t pas_de_veille;
+extern  uint16_t prolong_veille;
+extern  uint8_t action_stockage;
+extern  uint8_t action_envoi;
+extern uint8_t freq_envoi;
+extern uint8_t boot_rapide;
+extern char latitude[];
+extern char longitude[];
+extern  uint8_t last_wifi_channel;
+extern uint8_t WIFI_CHANNEL;
+extern uint8_t local_ip[4];
+extern uint8_t gateway[4];
+extern uint8_t subnet[4];
+extern uint8_t primaryDNS[4];
+extern uint8_t secondaryDNS[4];
+extern char nom_routeur[];
+extern char mdp_routeur[];
+extern uint8_t websocket_on;
+extern char ip_websocket[];
+extern uint8_t id_websocket;
+
+extern uint8_t Capt_tps_max;
+extern uint8_t Capt_nb_val_max;
+extern uint8_t Capt_seuil_temp;
+extern uint16_t Capt_tps_total_max;
+extern uint8_t delai_detection;
+
+extern const size_t PARAMS_COUNT;
+extern Param PARAMS[];
 
 template<typename T>
 void payloadWrite(uint8_t* payload, uint8_t& pos, const T& value)
@@ -225,7 +291,8 @@ uint8_t requete_Get_appli(const char* var, float* valeur);
 uint8_t requete_Set_appli(String param, float valf);
 uint8_t requete_GetReg(int reg, float* valeur);
 void  activation_writelog();
-void     setup_nvs_rtc();
+void setup_nvs_rtc();
+void setup_appli();
 void enreg_24h( uint8_t veille);
 void printMemoryStatus();
 void resetI2C();
@@ -235,11 +302,13 @@ uint16_t selec_graph(uint8_t code, uint16_t hum, uint16_t ha, uint16_t pir);
 void detection_pir();
 uint8_t envoi_valeur_instant(float Tint, float Humid, float HA);
 void envoi_temp_hygro();
+void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3);
 
 void passage_deep_sleep(uint64_t temps);
 
 extern float Vbatt_ESP;   // Tension batterie ESP
 extern struct tm timeinfo;
+extern const int BTN_PIN[];  // Pins des boutons
 
 
 typedef enum {
@@ -322,7 +391,6 @@ extern  uint16_t err_Tint, err_Text, err_Heure;
 extern  float tempI_moy24h, tempE_moy24h, Hum_24h, HA_moy24h, PIR_24h;
 extern  uint16_t cpt24_Tint, cpt24_Text, cpt24_Hum, cpt24_HA, cpt24_PIR;
 
-extern  uint8_t action_envoi;
 
 extern char mdp_routeur[];
 extern  int16_t graphique[NB_Val_Graph][NB_Graphique];

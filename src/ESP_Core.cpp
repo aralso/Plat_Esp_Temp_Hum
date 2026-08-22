@@ -5,9 +5,7 @@ TODO :
 A compiler pour une firebeetle esp32-C6 ou uPesy vroom
 Avantages Platformio : Ifdef, intellisense, temps compil, backtrace
 
-v1.3 05/2026 board upesy, humidite absolue, envoi vers serveur
-v1.2 03/2026 Surveillance batterie, log 24h en eeprom, OTA à la demande
-v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
+v1.1 08/2026 nouveau core, trame temp variable
 
 Graphique 1 : par cycle : G1:temp_int(vert) G2:temp ext(bleu) G3:Nbdetect par cycle
 Graphique 2 : par 24h :   G1:Temp int(vert) G2:temp_ext(bleu) G3:Nb detect/24h
@@ -84,6 +82,9 @@ static bool eth_connected = false;
 #include "ClosedCube_HDC1080.h"
 #include "driver/rtc_io.h"
 
+#ifdef SDCARD
+  #include "SDMMC.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,13 +111,18 @@ extern "C" {
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
 #include "i2c.h"
-#include "FS.h"
-#include "SD_MMC.h"
 
 uint8_t err_wifi_repet;  // permet de resetter si le wifi ne se rétablit pas au bout de 4 jours
+uint16_t Seuil_batt_arret_ESP;  // millivolt
+RTC_NOINIT_ATTR uint8_t pas_de_veille;
+
+RTC_NOINIT_ATTR uint16_t prolong_veille;
+RTC_NOINIT_ATTR uint8_t action_stockage;
+RTC_NOINIT_ATTR uint8_t action_envoi;
+
+uint8_t sdcard_ok;
 
 uint8_t init_masquage=1;
-RTC_DATA_ATTR uint8_t cpt24h_batt;
 
 uint8_t envoi_data_gateway(Message_EspNow mess_esp);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
@@ -149,11 +155,11 @@ char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
   IPAddress SprimaryDNS(8, 8, 8, 8);      // DNS Primaire (Google DNS)
   IPAddress SsecondaryDNS(8, 8, 4, 4);    // DNS Secondaire (Google DNS)
 
-  IPAddress local_ip;  // Définir l'adresse IP statique souhaitée Garches:251.50 Catalane:248.5
-  IPAddress gateway;   // Définir la passerelle (généralement l'adresse du routeur)
-  IPAddress subnet;    // Masque de sous-réseau
-  IPAddress primaryDNS;      // DNS Primaire (Google DNS)
-  IPAddress secondaryDNS;    // DNS Secondaire (Google DNS)
+  RTC_NOINIT_ATTR uint8_t local_ip[4];  // Adresse IP statique
+  RTC_NOINIT_ATTR uint8_t gateway[4];   // Passerelle
+  RTC_NOINIT_ATTR uint8_t subnet[4];    // Masque de sous-réseau
+  RTC_NOINIT_ATTR uint8_t primaryDNS[4];      // DNS primaire
+  RTC_NOINIT_ATTR uint8_t secondaryDNS[4];    // DNS secondaire
 
 
 #else  // WT32
@@ -186,56 +192,60 @@ volatile bool debounceFlag = false;
 // etat d'un system externe commandable par Pin_on et pin_off  : 0 éteint, 1:allumé
 uint8_t systeme_marche=0;
 
-uint8_t mode_reseau=13;  //  0:pas de reseau 11:wifi_AP_usine  12:wifi_AP   13:wifi_routeur  14:Ethernet filaire 
+RTC_NOINIT_ATTR uint8_t mode_reseau=13;  //  0:pas de reseau 11:wifi_AP_usine  12:wifi_AP   13:wifi_routeur  14:Ethernet filaire 
 #ifdef NO_RESEAU
   mode_reseau=0;
 #endif
 
-char nom_routeur[16]="";
-char mdp_routeur[16]="";
+RTC_NOINIT_ATTR char nom_routeur[16]="";
+RTC_NOINIT_ATTR char mdp_routeur[16]="";
+RTC_NOINIT_ATTR char latitude[16]="";
+RTC_NOINIT_ATTR char longitude[16]="";
+
 unsigned long last_remote_Tint_time = 0, last_remote_Text_time=0, last_remote_heure_time=0;
 
-RTC_DATA_ATTR int16_t  graphique [NB_Val_Graph][NB_Graphique];
+RTC_NOINIT_ATTR int16_t  graphique [NB_Val_Graph][NB_Graphique];
 
 // Status
-RTC_DATA_ATTR uint32_t rtc_magic = 0xDEADBEEF;
+RTC_NOINIT_ATTR uint32_t rtc_magic = 0xDEADBEEF;
 uint8_t rtc_valid;  // 0:non valide-cold reset  1:reset apres deep sleep : RTC valide
 uint16_t nb_err_reseau;
-RTC_DATA_ATTR uint16_t cpt_cycle_batt; // Compteur cycles pour mesure batterie
+RTC_NOINIT_ATTR uint16_t cpt_cycle_batt; // Compteur cycles pour mesure batterie
 uint16_t erreur_queue=0;
 uint8_t num_err_queue[5];
 uint8_t cpt_init=0;
-RTC_DATA_ATTR uint8_t etat_ESP_stop;  // 0:normal 1:arrêté pour batterie faible (deepsleep longue duree)
 
 // websocket
-uint8_t websocket_on=0;     // 1:off 2:on
-char ip_websocket[40]="";   // ws://webcam.hd.free.fr:8081";
-uint8_t id_websocket=0;
+RTC_NOINIT_ATTR uint8_t websocket_on=0;     // 1:off 2:on
+RTC_NOINIT_ATTR char ip_websocket[40]="";   // ws://webcam.hd.free.fr:8081";
+RTC_NOINIT_ATTR uint8_t id_websocket=0;
 using namespace websockets;
 WebsocketsClient wsClient;  // Client WebSocket
 bool isWebSocketConnected = false;
-uint8_t DelaiWebsocket = 1;
+RTC_NOINIT_ATTR uint8_t DelaiWebsocket = 1;
 uint16_t cpt_ws_timeout=0, cpt_ws_ping=0;
 
 bool force_stay_awake = false; // Flag pour rester éveillé après appui bouton
-uint8_t type_reveil;  //0:power_on 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
+uint8_t type_reveil;  //0:power on 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
 unsigned long wake_up_time = 0; // Temps de réveil
 
 //x seconds Watchdog 
 #define WDT_TIMEOUT 80  // reset watchdog dividé par 3 => 24 secondes
 uint16_t param_wdt_delay = 1;
 
+RTC_NOINIT_ATTR uint8_t boot_rapide;  // 0:lent 1:normal 2:rapide 3:très rapide
+
 
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600 * 1;      // fuseau horaire GMT+1h
 const int daylightOffset_sec = 3600 * 1;  // heure d'été
 struct tm timeinfo;
-RTC_DATA_ATTR uint8_t init_time = 0;  // 0:pas initialisé, 1:à8h, 3:avec internet 4:manuel
-RTC_DATA_ATTR uint8_t last_wifi_channel; // Mémorisation du canal Wifi en DeepSleep
-RTC_DATA_ATTR uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
+RTC_NOINIT_ATTR uint8_t init_time = 0;  // 0:pas initialisé, 1:à8h, 3:avec internet 4:manuel
+RTC_NOINIT_ATTR uint8_t last_wifi_channel; // Mémorisation du canal Wifi en DeepSleep
+RTC_NOINIT_ATTR uint8_t esp_now_actif;  // 0:esp_now inactif  1:actif
 float Vbatt_ESP = 0.0;   // Stockage tension batterie
 
-RTC_DATA_ATTR uint8_t periode_cycle;
+RTC_NOINIT_ATTR uint8_t periode_cycle;
 
 
 //Freertos
@@ -286,7 +296,7 @@ typedef struct __attribute__((packed)) {  // padding 16 : pour éviter  mauvaise
 const esp_partition_t* logPartition;
 size_t logOffset = 0;
 uint8_t log_err=2;  // 1 si la partition log_flash n'est pas trouvée  2:autre problème
-uint8_t log_detail;
+RTC_NOINIT_ATTR uint8_t log_detail;
 
 typedef struct __attribute__((packed)) {  // padding 16 : pour éviter  mauvaises surprises
   uint32_t timestamp;  // 4 octets
@@ -316,9 +326,9 @@ TimerHandle_t xTimer_Securite;
 
 WiFiClient client;
 
-RTC_DATA_ATTR uint8_t mode_rapide;
+RTC_NOINIT_ATTR uint8_t mode_rapide;
 
-uint16_t nb_reset;
+RTC_NOINIT_ATTR uint16_t nb_reset;
 uint32_t time_reset0;  // temps lors du precedent reset
 uint32_t time_reset1;  // temps lors reset actuel
 
@@ -327,10 +337,9 @@ uint8_t etat_connect_ethernet = 0;
 AsyncWebServer server(80);
 
 uint8_t cycle24h;
-RTC_DATA_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0, HA_moy24h=0, PIR_24h=0;
-RTC_DATA_ATTR uint16_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0, cpt24_HA=0, cpt24_PIR=0;
-RTC_DATA_ATTR uint16_t TextV=0, TintV=0, HumV=0, HAV=0, PIRV=0;  // pour stockage dans la partition log_flashG
-
+RTC_NOINIT_ATTR float  tempI_moy24h=0, tempE_moy24h=0, Hum_24h=0, HA_moy24h=0;
+RTC_NOINIT_ATTR uint16_t cpt24_Tint=0, cpt24_Text=0,  cpt24_Hum=0, cpt24_HA=0;
+RTC_NOINIT_ATTR uint16_t TextV=0, TintV=0, HumV=0, HAV=0;  // pour stockage dans la partition log_flashG
 
 // OTA
 bool otaEnabled = false;
@@ -393,7 +402,7 @@ uint8_t cpt_securite = 0;
 unsigned long previousMillis_temp = 20000;  // 1er à 20s
 unsigned long previousMillis_inittime;
 char St_Uptime[35];
-RTC_DATA_ATTR uint8_t skip_graph;
+RTC_NOINIT_ATTR uint8_t skip_graph;
 
 
 
@@ -420,9 +429,10 @@ uint8_t requete_Set_String(int param, const char *texte);
 uint8_t requete_Set_Action(const char *reg, const char *data);
 uint16_t trouve_index (uint8_t page);
 uint8_t requete_GetReg(int reg, float *valeur);
-void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3);
 uint16_t trouve_indexG (uint8_t page);
-
+char* requete_status_appli(char* p);
+void init_ram_variables_appli();
+uint8_t connectWiFiRapide();
 
 
 
@@ -698,13 +708,6 @@ void uart1Task(void * parameter) {
   }
 }
 
-
-void payloadWrite16(uint8_t* payload, uint8_t& pos, uint16_t val)
-{
-    payload[pos++] = val & 0xFF;
-    payload[pos++] = (val >> 8) & 0xFF;
-}
-
 uint16_t selec_graph(uint8_t code, uint16_t ha, uint16_t hum,  uint16_t pir)
 {
   if (code==0) return ha;
@@ -712,115 +715,6 @@ uint16_t selec_graph(uint8_t code, uint16_t ha, uint16_t hum,  uint16_t pir)
   else return pir;
 }
 
-// log batterie et Temp moyenne toutes les 24h.
-void enreg_24h( uint8_t veille)
-{
-    // Log toutes les jours/semaines : nb d'erreurs wifi et batteries
-  if (Nb_jours_Batt_log)
-  {
-    float vbatt = readBatteryVoltage();
-    Serial.printf("Tension Batterie : %.2f V\n", vbatt);
-
-    if ((Seuil_batt_arret_ESP) && (vbatt < Seuil_batt_arret_ESP) && (vbatt > 2400))
-    {
-      writeLog('S', 7, 0, 0, "Batt Stp");
-      etat_ESP_stop = 1;
-    }
-    cpt24h_batt++;
-    if (cpt24h_batt >= Nb_jours_Batt_log)  // log chaque X jour 
-    {
-      cpt24h_batt=0;
-
-      //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n", vbatt, Vbatt_Th);
-      if (veille)
-      {
-        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, 0, "24H_Res");
-      }
-      else
-      {
-        if (nb_err_reseau>255) nb_err_reseau=255;
-        writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, (uint8_t)nb_err_reseau, "24H_Res");
-        nb_err_reseau=0;
-      }
-    }
-  }
-
-  // erreurs Tint, Text, heure
-  if (err_Tint>254) err_Tint=255;
-  if (err_Tint)
-            log_erreur(Code_erreur_Tint, err_Tint,0);
-  if (err_Text>254) err_Text=255;
-  if (err_Text)
-            log_erreur(Code_erreur_Text, err_Text,0);
-  if (err_Heure>254) err_Heure=255;
-  if (err_Heure)
-            log_erreur(Code_erreur_Heure, err_Heure,0);
-  err_Tint=0;
-  err_Text=0;
-  err_Heure=0;
-
-  // graphique des temperatures quotidiennes
-  uint16_t tempI=1, tempE=1, Hum=1, HA=1, PIR=1;
-  if (cpt24_Tint)  tempI = (uint16_t)(tempI_moy24h/cpt24_Tint*10);
-  if (cpt24_Text)  tempE = (uint16_t)(tempE_moy24h/cpt24_Text*10);
-  if (cpt24_Hum) Hum = (uint16_t)(Hum_24h/cpt24_Hum*10);
-  if (cpt24_HA) HA = (uint16_t)(HA_moy24h/cpt24_HA*10);
-  if (cpt24_PIR) PIR = (uint8_t)(PIR_24h/cpt24_PIR*10);
-  if (!tempI) tempI=1;  // permet d'afficher quand meme le point sur le graphique
-  if (!tempE) tempE=1;  // permet d'afficher quand meme le point sur le graphique
-  if (!Hum) Hum=1;  // permet d'afficher quand meme le point sur le graphique
-  if (!HA) HA=1;  // permet d'afficher quand meme le point sur le graphique
-  if (!PIR) PIR=1;  // permet d'afficher quand meme le point sur le graphique
-  TextV = tempE;
-  TintV = tempI;
-  HumV = Hum;
-  HAV = HA;
-  PIRV = PIR;
-
-  //Serial.printf("Temp24h I:%.2f %i E:%.2f %i C:%.2f %i\n\r", tempI_moy24h, cpt24_Tint, tempE_moy24h, cpt24_Text, cout_moy24h, cpt24_Cout);
-
-  tempI_moy24h=0;
-  tempE_moy24h=0;
-  Hum_24h=0;
-  HA_moy24h=0;
-  PIR_24h=0;
-  cpt24_Tint=0;
-  cpt24_Text=0;
-  cpt24_Hum=0;
-  cpt24_HA=0;
-  cpt24_PIR=0;
-
-  uint8_t i;
-  for (i = NB_Val_Graph - 1; i; i--) {
-    graphique[i][3] = graphique[i - 1][3];
-    graphique[i][4] = graphique[i - 1][4];
-    graphique[i][5] = graphique[i - 1][5];
-  }
-  graphique[0][3] = tempI;
-  graphique[0][4] = selec_graph(GRAPH2, HA, Hum, PIR);
-  graphique[0][5] = selec_graph(GRAPH3, HA, Hum, PIR);  
-
-  Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i HA:%i\n\r", tempI, tempE, Hum, HA);
-  writeLogG('G', tempI, HA, Hum); // Enregistrment en Flash des 3 valeurs du graphique
-
-  if (action_envoi && esp_now_actif)
-  {
-    Message_EspNow message;
-
-    message.destinataire = SERVER_ADD & 0x80;  // 0x80 = message hexa
-    message.emetteur = ADDRESS;
-    message.code = 'C';
-    message.code2 = 'J';
-
-    uint8_t pos = 0;
-    payloadWrite(message.payload, pos, tempI);
-    payloadWrite(message.payload, pos, Hum);
-    message.longueur = 5 + pos - 3;
-
-    uint8_t result = envoi_data_gateway(message);
-
-  }      
-}
 
 
 void taskHandler(void *parameter) {
@@ -830,7 +724,7 @@ void taskHandler(void *parameter) {
       //Serial.printf("enreg wdt taskhandler : %i\n\r", status);
     #endif
 
-    Serial.printf("Taskhandler : coeur %d\n\r", xPortGetCoreID());
+    if (log_detail>=3) Serial.printf("Taskhandler : coeur %d\n\r", xPortGetCoreID());
 
     while (true) {
         // Attendre un 2 événement (bloque tant qu'il n'y a rien)
@@ -846,7 +740,7 @@ void taskHandler(void *parameter) {
                     // 10 secondes apres l'initialisation : fin masquage entrees
                     init_10_secondes();
                     init_masquage=0;
-                    Serial.println("fin masquage des entrees");
+                    if (log_detail>=3) Serial.println("fin masquage des entrees");
                     xTimerChangePeriod(xTimer_Init,attente_mise_heure*(1000/portTICK_PERIOD_MS),100);  // passage à 30 secondes
                     xTimerStart(xTimer_Init,100);
                     cpt_init++;
@@ -988,7 +882,7 @@ void taskHandler(void *parameter) {
                       }
                     }
                     else
-                      Serial.println("test reseau ok");
+                      if (log_detail>=3) Serial.println("test reseau ok");
                   #endif
                 }
                 break;
@@ -1086,14 +980,169 @@ void init_rtc_variables()
 
 void init_ram_variables()
 {
-  cpt24h_batt=6;   // pour esp_chaudiere (chaque jour)
   err_Tint=0;
   err_Text=0;
   err_Heure=0;
   nb_err_reseau=0;
   Tint=20.0;
   Text=10.0;
+  init_ram_variables_appli();
 }
+
+static IPAddress makeIPAddress(const uint8_t address[4])
+{
+  return IPAddress(address[0], address[1], address[2], address[3]);
+}
+
+static void storeIPAddress(uint8_t destination[4], const IPAddress& address)
+{
+  for (uint8_t i = 0; i < 4; ++i) {
+    destination[i] = address[i];
+  }
+}
+
+static IPAddress defaultIPAddressForKey(const char* key)
+{
+  if (key == nullptr) return IPAddress(0, 0, 0, 0);
+
+  #ifdef MODE_Wifi
+    if (strcmp(key, "ipAdd") == 0) return Slocal_ip;
+    if (strcmp(key, "ipGat") == 0) return Sgateway;
+    if (strcmp(key, "ipSub") == 0) return Ssubnet;
+    if (strcmp(key, "ipDNS") == 0) return SprimaryDNS;
+    if (strcmp(key, "ipDNS2") == 0) return SsecondaryDNS;
+  #endif
+  return IPAddress(0, 0, 0, 0);
+}
+
+
+uint8_t nvs_read(Param &p) {
+
+  // If the parameter is marked rtc_valid, skip NVS read (value lives in RTC/memory)
+  if (p.rtc_valid) {
+    if (p.key && p.key[0] != '\0') Serial.printf("parametre %s : rtc_valid -> skip NVS read\n", p.key);
+    else Serial.printf("parametre (no-key) : rtc_valid -> skip NVS read\n");
+    return 0; // nothing to read from NVS for RTC-backed parameters
+  }
+
+  switch (p.type) {
+
+      // =========================
+      case U8: {
+        uint8_t v = preferences_nvs.getUChar(p.key, (uint8_t)(p.max16 + 1));
+        uint8_t* ptr = (uint8_t*)p.var;
+
+        if (v < p.min16 || v > p.max16) {
+          v = (uint8_t)p.def_u16;
+          preferences_nvs.putUChar(p.key, v);
+
+          Serial.printf("****RAZ NVS parametre %s : defaut %u\n", p.key, v);
+          if (ptr) *ptr = v;
+          return 1;
+        }
+
+        if (ptr) *ptr = v;
+        if (log_detail>=3) Serial.printf("parametre %s : valeur %u\n", p.key, v);
+        return 0;
+      }
+
+      // =========================
+      case U16: {
+        uint16_t v = preferences_nvs.getUShort(p.key, 0xFFFF);
+        uint16_t* ptr = (uint16_t*)p.var;
+
+        if (v < p.min16 || v > p.max16) {
+          v = (uint16_t)p.def_u16;
+          preferences_nvs.putUShort(p.key, v);
+
+          Serial.printf("****RAZ NVS parametre %s : defaut %u\n", p.key, v);
+          if (ptr) *ptr = v;
+          return 1;
+        }
+
+        if (ptr) *ptr = v;
+        if (log_detail>=3) Serial.printf("parametre %s : valeur %u\n", p.key, v);
+        return 0;
+      }
+
+      // =========================
+      case IP: {
+        uint8_t* ipBytes = static_cast<uint8_t*>(p.var);
+        bool hasValue = p.key != nullptr && preferences_nvs.isKey(p.key);
+        IPAddress ip = hasValue
+          ? IPAddress(preferences_nvs.getULong(p.key, 0ul))
+          : defaultIPAddressForKey(p.key);
+
+        if (!hasValue) {
+          preferences_nvs.putULong(p.key, (uint32_t)ip);
+          Serial.printf("****RAZ NVS parametre %s : defaut %s\n", p.key, ip.toString().c_str());
+          if (ipBytes) storeIPAddress(ipBytes, ip);
+          return 1;
+        }
+
+        uint32_t v = preferences_nvs.getULong(p.key, 0ul);
+        if (v < p.min16 || v > p.max16) {
+          ip = defaultIPAddressForKey(p.key);
+          preferences_nvs.putULong(p.key, (uint32_t)ip);
+          Serial.printf("****RAZ NVS parametre %s : defaut %s\n", p.key, ip.toString().c_str());
+        }
+        if (ipBytes) storeIPAddress(ipBytes, ip);
+        if (log_detail>=3) Serial.printf("parametre %s : valeur %s\n", p.key, ip.toString().c_str());
+        return 0;
+      }
+
+      // =========================
+      case STR: {
+        String v = preferences_nvs.getString(p.key, "");
+
+        char* ptr = (char*)p.var;
+
+        // 1) vide = probablement jamais initialisé ou erreur
+        if ((v.length() == 0) || v.length() >= p.size)
+        {
+          v = String(p.def_str);
+
+          preferences_nvs.putString(p.key, v);
+
+          strncpy(ptr, p.def_str, 31);
+          ptr[31] = '\0';
+
+          Serial.printf("****RAZ NVS parametre %s : defaut %s\n", p.key, ptr);
+          return 1;
+        }
+
+        // copie OK
+        strncpy(ptr, v.c_str(), p.size - 1);
+        ptr[p.size - 1] = '\0';
+
+        if (log_detail>=3) Serial.printf("parametre %s : valeur %s\n", p.key, ptr);
+        return 0;
+      }   
+
+      default:
+        break; 
+  }
+
+  return 1;
+}
+
+void apply_log_detail(int log_detail)
+{
+esp_log_level_t lvl;
+if (log_detail <= 0) lvl = ESP_LOG_NONE;
+else if (log_detail == 1) lvl = ESP_LOG_ERROR;
+else if (log_detail == 2) lvl = ESP_LOG_WARN;
+else if (log_detail == 3) lvl = ESP_LOG_INFO;
+else if (log_detail == 4) lvl = ESP_LOG_DEBUG;
+else  lvl = ESP_LOG_VERBOSE;   // 5
+
+esp_log_level_set("*", lvl);
+// Optionnel : activer/désactiver des tags spécifiques plus finement
+// if (log_detail >= 4) esp_log_level_set("mjpegw", ESP_LOG_DEBUG);
+// else esp_log_level_set("mjpegw", ESP_LOG_NONE);
+}
+
+
 
 void resetI2C() {
   Wire.end();              // stop I2C
@@ -1103,6 +1152,7 @@ void resetI2C() {
   Wire.begin(PIN_SDA, PIN_SCL); // Forçage des pins SDA=8, SCL=9 pour ESP32 S3 DevKit V1
   Wire.setClock(100000);  // stable (100 kHz conseillé)
 }
+
 
 void i2cBootRecovery() {
   pinMode(PIN_SDA, INPUT_PULLUP);
@@ -1141,11 +1191,14 @@ void i2cRecovery() {
 void setup()
 {
   
-  //delay(1000);
+  if (boot_rapide < 2) delay(3000);
+
   // Cause reset :
   resetReason0 = (uint8_t) esp_reset_reason();
   Serial.begin(115200);
   
+  Serial.printf("milli A: %lu  boot_rapide:%i log_detail:%i\n", millis(), boot_rapide, log_detail);
+
   // Cause réveil du deep/light_sleep (undefined si pas de reveil deep/light sleep)
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause(); // 2:ext0(1pin) 3:Ext1(2pins) 7:GPIO 4:Timer
   uint8_t reveil=0;
@@ -1361,21 +1414,10 @@ void setup()
   }
 
   // ------  NVS Eeprom  ---------------------
+    preferences_nvs.begin("NVS_App", false);
 
   if ((type_reveil>=4) || (!type_reveil))
   {
-    preferences_nvs.begin("NVS_App", false);
-
-    setup_nvs_rtc();
-
-    // Initialisation variable skip graph
-    skip_graph = preferences_nvs.getUChar("Skip", 0);
-    if ((!skip_graph) || (skip_graph > 50))  // entre 1 et 50
-    {
-      Serial.println("Raz skip graph : valeur par defaut:2");
-      skip_graph = 12;  // 1 valeur sur 12
-      preferences_nvs.putUChar("Skip", skip_graph);
-    }
 
 
     if (type_reveil>=4)
@@ -1385,76 +1427,31 @@ void setup()
       nb_reset++;
       preferences_nvs.putUShort("nb_reset", nb_reset);
 
-      // mode reseau
-      mode_reseau = preferences_nvs.getUChar("reseau", 0);  // 11:wifi_AP_usine  12:wifi_AP 13:wifi_routeur  14:Ethernet filaire  autre:wifi_routeur
-      if ((mode_reseau<11) || (mode_reseau>14)) {  //init de nvs
-        mode_reseau=11;
-        preferences_nvs.putUChar("reseau", 11);
-        Serial.printf("Raz mode reseau Wifi AP : val par defaut 11\n\r");
+      if (!rtc_valid) // si rtc non valide (cold reset) => lecture de tous les paramètres nvs
+      {
+        if (log_detail>=4) Serial.printf("NVS : nb de parametres : %d\n\r", PARAMS_COUNT);
+        // lecture de tous les paramètres nvs uint8_t, uint16_t, uint32_t(IP) et string
+        for (size_t i = 0; i < PARAMS_COUNT; ++i) {
+          nvs_read(PARAMS[i]);
+          if (i==1)  // log_detail
+          {
+              apply_log_detail(log_detail);
+              Serial.printf("log_detail:%i\n\r", log_detail);
+          }
+        }
       }
-      else Serial.printf("mode reseau : %i\n\r", mode_reseau);
 
 
       #ifdef NO_RESEAU
         mode_reseau=0;
       #endif
 
-      // delai écoute websocket
-      DelaiWebsocket = preferences_nvs.getUChar("DelWS", 0);  // en secondes
-      if ((!DelaiWebsocket) || (DelaiWebsocket>30)) { 
-        DelaiWebsocket=1;
-        preferences_nvs.putUChar("DelWS", 1);
-        Serial.printf("New Delai ecoute websocket : val par defaut :1\n\r");
-      }
-      else Serial.printf("Delai ecoute websocket : %i\n\r", DelaiWebsocket);
-
-
-      // lecture de détail_log
-      log_detail = preferences_nvs.getUChar("LogD", 100);
-      if (log_detail > 4)
-      {
-        log_detail = 0; 
-        preferences_nvs.putUChar("LogD", log_detail);
-        Serial.printf("New : Détail_log : %i \n\r", log_detail);
-      }
-      //else
-      //  Serial.printf("Détail log : %i \n\r", log_detail);
 
       uint8_t err_ip=0;
-      // routeur : SSID & mot de passe
-      String storedString = preferences_nvs.getString("Rout", "");
-      if ((storedString.length() < 15) && (storedString.length())) {
-        storedString.toCharArray(nom_routeur, sizeof(nom_routeur));
-        Serial.printf("nom_routeur : %s\n\r", nom_routeur);
-      }
-
-      String storedString2 = preferences_nvs.getString("Mdp", "");
-      if ((storedString.length()) && (storedString2.length() < 15)) {
-        storedString2.toCharArray(mdp_routeur, sizeof(mdp_routeur));
-      }
       if (!nom_routeur[0]) {
         err_ip=1;
         Serial.println("pas de routeur");
       }
-      Serial.printf("routeur:%s  \n\r", nom_routeur);
-
-      // adresse IP
-      uint32_t storedIP = preferences_nvs.getULong("ipAdd", 0);
-      local_ip =  IPAddress(storedIP);
-      Serial.printf("Adresse IP : %s\n\r", local_ip.toString().c_str());
-
-      storedIP = preferences_nvs.getULong("ipGat", 0);
-      gateway =  IPAddress(storedIP);
-      Serial.printf("Gateway IP : %s\n\r", gateway.toString().c_str());
-
-      storedIP = preferences_nvs.getULong("ipSub", 0);
-      subnet = IPAddress(storedIP);
-
-      storedIP = preferences_nvs.getULong("ipDNS", 0);
-      primaryDNS = IPAddress(storedIP);
-
-      storedIP = preferences_nvs.getULong("ipDNS2", 0);
-      secondaryDNS = IPAddress(storedIP);
 
       if ((!local_ip[0]) || (!gateway[0]))  err_ip=1;
       if ((!subnet[0]) || (!primaryDNS[0]) || (!secondaryDNS[0]))  err_ip=1;
@@ -1467,41 +1464,6 @@ void setup()
         mode_reseau=11;
       #endif
 
-      #ifndef Sans_websocket
-        //lecture websocket ws://webcam.hd.free.fr:8081
-        // lecture id websocket
-        websocket_on = preferences_nvs.getUChar("WSOn", 0);
-        if (websocket_on!=1 && websocket_on!=2)
-        {
-          websocket_on=1;
-          preferences_nvs.putUChar("WSOn", 1);
-          Serial.printf("New websocket OFF : %i\n\r", websocket_on);
-        }
-        else
-          Serial.printf("websocket ON : %i\n\r", websocket_on);
-
-        //if (websocket_on==2)
-        //{
-          storedString = preferences_nvs.getString("WSock", "");
-          if ((storedString.length() < 40) && (storedString.length() > 3)) {
-            storedString.toCharArray(ip_websocket, sizeof(ip_websocket));
-            Serial.printf("websocket : %s\n\r", ip_websocket);
-          }
-          // lecture id websocket
-          id_websocket = preferences_nvs.getUChar("WSId", 0);
-          if (!id_websocket || id_websocket>=10)
-          {
-            id_websocket=9;
-            preferences_nvs.putUChar("WSId", id_websocket);
-            Serial.printf("New Id websocket : %i\n\r", id_websocket);
-          }
-          else
-            Serial.printf("Id websocket : %i\n\r", id_websocket);
-      #endif // fin sans_websocket
-
-
-
-      setup_nvs();  // NVS appli
     }
 
     // lecture du Bouton BTN0 : si actif pendant 1 secondes => Wifi_AP
@@ -1521,34 +1483,9 @@ void setup()
 
   setup_1();  // --------------   initialisation sonde temperature------------
 
+   if (log_detail>=2) Serial.printf("milli G: %lu\n", millis());
 
-  // -------------  Capteur/Detecteur : stockage ou envoie infos à la gateway -------------------
-
-  if (type_reveil ==2)   // Detection PIR
-  {
-    detection_pir();
-    uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
-    if (mode_rapide==12)
-    sleep_time = (uint64_t)periode_cycle * 1000000;
-    passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
-  }
-  else 
-  {
-    if (type_reveil == 1)  event_cycle(); // réveil par timer
-    else 
-    {
-      envoi_temp_hygro();
-    }
-    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // pull_up => 1, appui => 0
-    if ((type_reveil != 4) || (etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
-    {
-      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
-      if (mode_rapide==12)
-      sleep_time = (uint64_t)periode_cycle * 1000000;
-      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
-    }
-  }
-
+   setup_appli();
 
 
   // -------------- partition "log_flash" custom  pour Write-log -------------------
@@ -1563,14 +1500,20 @@ void setup()
   else
   {
     log_err=0; // ok
-    Serial.println("Partition 'log_flash' trouvée.");
-  
-    delay(500 + random(1, 1001) );
-    writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
-    delay(500);
+    if (log_detail>=4) 
+    {
+      Serial.println("Partition 'log_flash' trouvée.");
+      delay(500 + random(1, 1001) );
+    }
 
-    readLastLogsBinary((uint8_t*)buffer_dmp, 10);  
-    delay(200);
+    writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
+    if (boot_rapide < 2) delay(500);
+
+    if (log_detail>=4) 
+    {
+      readLastLogsBinary((uint8_t*)buffer_dmp, 10);  
+      delay(200);
+    }
   }
 
   // Recherche de la partition "log_flashG" custom
@@ -1583,8 +1526,9 @@ void setup()
   else
   {
     log_errG=0;
-    Serial.println("Partition 'log_flash_G' trouvée.");
+    if (log_detail>=4) Serial.println("Partition 'log_flash_G' trouvée.");
   }
+  if (log_detail>=2) Serial.printf("milli H: %lu\n", millis());
 
   // -------------   Configuration des timers FreeRTOS (max 49 jours)   --------------------
 
@@ -1635,14 +1579,16 @@ void setup()
     xTimerStart(xTimer_Watchdog,100);
   #endif
 
-  delay(1000); // Attente 4 sec pour que les boutons se stabilisent
+  if (log_detail>=2) Serial.printf("milli I: %lu\n", millis());
 
   xTimerStart(xTimer_Init,100);
   xTimerStart(xTimer_24H,100);
   xTimerStart(xTimer_Cycle,100);
   //xTimerStart(xTimer_Compresseur,100);
 
-  delay(1000); // Attente 4 sec pour que les boutons se stabilisent
+  if (boot_rapide < 3) delay(1000); // Attente 4 sec pour que les boutons se stabilisent
+
+  if (log_detail>=2) Serial.printf("milli J: %lu\n", millis());
 
   // Reset du watchdog avant de démarrer le réseau
   #ifdef WatchDog
@@ -1659,7 +1605,7 @@ void setup()
 
   // -------------------- demarrage du reseau  ------------------
 
-  Serial.printf("mode reseau avant wifi:%i\n\r", mode_reseau);
+  if (log_detail>=4) Serial.printf("mode reseau avant wifi:%i\n\r", mode_reseau);
 
   #ifndef NO_RESEAU 
 
@@ -1685,11 +1631,11 @@ void setup()
 
       //WiFi.mode(WIFI_STA);
       #ifdef DEBUG
-        local_ip = Slocal_ip;
-        gateway = Sgateway;
-        subnet = Ssubnet;
-        primaryDNS = SprimaryDNS;
-        secondaryDNS = SsecondaryDNS;
+        storeIPAddress(local_ip, Slocal_ip);
+        storeIPAddress(gateway, Sgateway);
+        storeIPAddress(subnet, Ssubnet);
+        storeIPAddress(primaryDNS, SprimaryDNS);
+        storeIPAddress(secondaryDNS, SsecondaryDNS);
         
         strncpy(nom_routeur, ssid, sizeof(nom_routeur) - 1);
         nom_routeur[sizeof(nom_routeur) - 1] = '\0'; // Sécurisation de la terminaison
@@ -1701,22 +1647,30 @@ void setup()
       
       // Protection UART avant connexion WiFi
       //protectUARTDuringWiFi();
-      
-      uint8_t wifiResult = connectWiFiWithDiagnostic();
-      
+      if (log_detail>=2) Serial.printf("milli J1: %lu\n", millis());
+
+      uint8_t wifiResult;
+      if (boot_rapide >2)
+        wifiResult = connectWiFiRapide();
+      else
+      {
+        wifiResult = connectWiFiWithDiagnostic();
+        if (wifiResult == 0) {
+          etat_connect_ethernet = 2;
+          eth_connected = true;
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+          //Serial.println("Wifi OK");
+          // Optimisation consommation : activation du Modem Sleep
+          //WiFi.setSleep(true);
+        }
+        else Serial.println("Wifi pas ok");
+      }
+      if (log_detail>=2) Serial.printf("milli J2: %lu\n", millis());
+
       // Protection UART après connexion WiFi
       //protectUARTDuringWiFi();
       
-      if (wifiResult == 0) {
-        etat_connect_ethernet = 2;
-        eth_connected = true;
-      }
-      if (WiFi.status() == WL_CONNECTED) {
-        //Serial.println("Wifi OK");
-        // Optimisation consommation : activation du Modem Sleep
-        //WiFi.setSleep(true);
-      }
-      else Serial.println("Wifi pas ok");
     }
 
   #else  // WT32 Ethernet
@@ -1749,20 +1703,22 @@ void setup()
     //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
     setupRoutes();
+
     server.begin();
 
+  if (log_detail>=2) Serial.printf("milli L: %lu\n", millis());
 
   #endif // No_reseau
 
   printMemoryStatus();
-  delay(100);
+  if (boot_rapide < 1) delay(100);
 
 
   // ------- changement de frequence CPU -------------------
 
   uint16_t Cpu_freq = getCpuFrequencyMhz();
   setCpuFrequencyMhz(80);
-  Serial.printf("CPU Freq: avant:%i  apres:%u\n", Cpu_freq, (unsigned int)getCpuFrequencyMhz());
+  if (log_detail>=3) Serial.printf("CPU Freq: avant:%i  apres:%u\n", Cpu_freq, (unsigned int)getCpuFrequencyMhz());
 
 
 
@@ -1775,7 +1731,9 @@ void setup()
 
   printMemoryStatus();
 
-  setup_2();  // Esp_now
+  setup_2();  // Esp_now  et read LogG(99)
+
+  if (log_detail>=2) Serial.printf("milli M: %lu\n", millis());
 
   // ------------  Configuration OTA -----------------
 
@@ -1812,20 +1770,27 @@ void setup()
 
     //WiFi.setTxPower(WIFI_POWER_19_5dBm); // puissance max
     ArduinoOTA.begin();
-    Serial.println("OTA prêt");
+
+    // 🔥 Fenêtre OTA de secours
+    if (boot_rapide < 2) {
+      if (log_detail>=3) Serial.println("Fenêtre OTA 5 secondes...");
+      unsigned long start = millis();
+      while (millis() - start < 5000) {
+        ArduinoOTA.handle();
+        delay(10);
+      }
+    }
+
   #endif  // fin OTA
 
- // 🔥 Fenêtre OTA de secours
-  Serial.println("Fenêtre OTA 5 secondes...");
-  unsigned long start = millis();
-  while (millis() - start < 5000) {
-    ArduinoOTA.handle();
-    delay(10);
-  }
+
+  #ifdef SDCARD
+    if (!sd_init()) sdcard_ok=1;
+  #endif
 
   //WiFi.setSleep(true);
 
-  Serial.println("fin setup:");
+  Serial.printf("fin setup: %i ms\n\r", millis());
 
   #ifdef WATCHDOG
     esp_task_wdt_delete(NULL); // desinscription de la tache setup/loop de la surveillance watchdog : permet d'éviter le reset_wdt dans la tache loop
@@ -2365,7 +2330,7 @@ uint8_t requete_Set(uint8_t type, const char* param, const char* valStr)
     if (cpt_securite)
       res2 = requete_Set_appli (param, valf);
   }
-  Serial.printf("res:%i res2:%i\n\r", res, res2);
+  if (log_detail>=4) Serial.printf("res:%i res2:%i\n\r", res, res2);
   return (res+res2-1);
 }
 
@@ -2408,62 +2373,47 @@ uint8_t requete_Get_String (uint8_t type, String var, char *valeur)
 
   if (len == 0 || valeur == nullptr) return 1;  // sécurité de base
 
-  if (paramV == 1)  // registre 1 : adresse IP
-  {
-    res = 0;
-    local_ip.toString().toCharArray(valeur, 16);
-  }
-  if (paramV == 2)  // registre 2 : adresse gateway
-  {
-    res = 0;
-    gateway.toString().toCharArray(valeur, 16);
-  }
-  if (paramV == 3)  // registre 3 : adresse subnet
-  {
-    res = 0;
-    subnet.toString().toCharArray(valeur, 16);
-  }
-  if (paramV == 4)  // registre 4 : adresse DNS primaire
-  {
-    res = 0;
-    primaryDNS.toString().toCharArray(valeur, 16);
-  }
-  if (paramV == 5)  // registre 5 : adresse DNS secondaire
-  {
-    res = 0;
-    secondaryDNS.toString().toCharArray(valeur, 16);
-  }
-  if (paramV == 6)  // registre 6 : nom routeur
-  {
-    res = 0;
-    strncpy(valeur, nom_routeur, 16);
-    valeur[15] = '\0';
-  }
-  if (paramV == 7)  // registre 7 : mdp routeur
-  {
-    if (cpt_securite) {
-      res = 0;
-      strncpy(valeur, mdp_routeur, 16);
-      valeur[15] = '\0';
+  // First attempt: generic lookup in PARAMS for matching order
+  size_t n = PARAMS_COUNT;
+  for (size_t i = 0; i < n; ++i) {
+    Param &p = PARAMS[i];
+    if (p.order != (uint8_t)paramV) continue;
+
+    // If string type, copy directly
+    if (p.type == STR) {
+      if (p.var != nullptr) {
+        strncpy(valeur, (const char*)p.var, len);
+        valeur[len-1] = '\0';
+        res = 0;
+      } else if (p.def_str != nullptr) {
+        strncpy(valeur, p.def_str, len);
+        valeur[len-1] = '\0';
+        res = 0;
+      }
     }
-  }
-  if (paramV == 8)  // registre 8 : websocket On
-  {
-    res = 0;
-    valeur[0]=websocket_on+'0';
-    valeur[1] = '\0';
-  }
-  if (paramV == 9)  // registre 9 : adresse websocket
-  {
-    res = 0;
-    strncpy(valeur, ip_websocket, 40);
-    valeur[39] = '\0';
-  }
-  if (paramV == 10)  // registre 10 : websocket Id
-  {
-    res = 0;
-    valeur[0]=id_websocket+'0';
-    valeur[1] = '\0';
+    else if (p.type == IP) {
+      if (p.var != nullptr) {
+        IPAddress ip = makeIPAddress(static_cast<const uint8_t*>(p.var));
+        ip.toString().toCharArray(valeur, len);
+        res = 0;
+      }
+    }
+    else if (p.type == U16) {
+      if (p.var != nullptr) {
+        uint16_t v = *((uint16_t*)p.var);
+        snprintf(valeur, len, "%u", (unsigned)v);
+        res = 0;
+      }
+    }
+    else if (p.type == U8) {
+      if (p.var != nullptr) {
+        uint8_t v = *((uint8_t*)p.var);
+        snprintf(valeur, len, "%u", (unsigned)v);
+        res = 0;
+      }
+    }
+
+    if (!res) break; // found and filled
   }
 
   res2 = requete_Get_String_appli(type, var, valeur);
@@ -2651,7 +2601,42 @@ uint8_t requete_Set_Action(const char *reg, const char *data)
       //Serial.printf("envoi esp_now T=20.2\n\r");
       delay(1000);
     }
-  
+
+        // print variables NVS
+    if (strcmp(reg, "P_NVS") == 0) 
+    { 
+      res=0; 
+      for (size_t i = 0; i < PARAMS_COUNT; ++i) {
+        if (PARAMS[i].key && PARAMS[i].key[0] != '\0') {
+          switch (PARAMS[i].type) {
+            case U8:
+              Serial.printf("parametre %s : %u\n", PARAMS[i].key, *(uint8_t*)PARAMS[i].var);
+              break;
+            case U16:
+              Serial.printf("parametre %s : %u\n", PARAMS[i].key, *(uint16_t*)PARAMS[i].var);
+              break;
+            case U32:
+              Serial.printf("parametre %s : %lu\n", PARAMS[i].key, *(uint32_t*)PARAMS[i].var);
+              break;
+            case STR:
+              Serial.printf("parametre %s : %s\n", PARAMS[i].key, (const char*)PARAMS[i].var);
+              break;
+            case IP: {
+              uint8_t* ipBytes = static_cast<uint8_t*>(PARAMS[i].var);
+              if (ipBytes) {
+                IPAddress ip = makeIPAddress(ipBytes);
+                Serial.printf("parametre %s : valeur %s\n", PARAMS[i].key, ip.toString().c_str());
+              }
+              break;
+            }
+            default:
+              Serial.printf("parametre %s : <type inconnu>\n", PARAMS[i].key);
+              break;
+          }
+        }
+      }
+    }
+
     res2 = requete_action_appli(reg, data);
   }
   
@@ -2673,7 +2658,7 @@ uint8_t requete_Set_String(int param, const char *texte)
   {
     IPAddress ip;
     
-    if (param == 1)  // registre 1 : Adresse IP
+    if (param == 50)  // registre 50 : Adresse IP
     {
       if (ip.fromString(texte))
       {
@@ -2682,57 +2667,57 @@ uint8_t requete_Set_String(int param, const char *texte)
         //IP32 = (ip[0] << 24) | (ip[1] << 16) | (ip[2] << 8) | ip[3];
         //Serial.printf("ip:%s %08X\n\r", ip.toString().c_str(), IP32);
         preferences_nvs.putULong("ipAdd", IP32);
-        local_ip = ip;
+        storeIPAddress(local_ip, ip);
       }
     }
-    if (param == 2)  // registre 2 : Adresse gateway
+    if (param == 51)  // registre 51 : Adresse gateway
     {
       if (ip.fromString(texte))
       {
         res = 0;
         uint32_t IP32 = (uint32_t)ip;  // transforme en uint32_t
         preferences_nvs.putULong("ipGat", IP32);
-        gateway = ip;
+        storeIPAddress(gateway, ip);
       }
     }
-    if (param == 3)  // registre 3 : Adresse subnet
+    if (param == 52)  // registre 52 : Adresse subnet
     {
       if (ip.fromString(texte))
       {
         res = 0;
         uint32_t IP32 = (uint32_t)ip;  // transforme en uint32_t
         preferences_nvs.putULong("ipSub", IP32);
-        subnet = ip;
+        storeIPAddress(subnet, ip);
       }
     }
-    if (param == 4)  // registre 4 : Adresse DNS
+    if (param == 53)  // registre 53 : Adresse DNS
     {
       if (ip.fromString(texte))
       {
         res = 0;
         uint32_t IP32 = (uint32_t)ip;  // transforme en uint32_t
         preferences_nvs.putULong("ipDNS", IP32);
-        primaryDNS = ip;
+        storeIPAddress(primaryDNS, ip);
       }
     }
-    if (param == 5)  // registre 5 : Adresse DNS2
+    if (param == 54)  // registre 54 : Adresse DNS2
     {
       if (ip.fromString(texte))
       {
         res = 0;
         uint32_t IP32 = (uint32_t)ip;  // transforme en uint32_t
         preferences_nvs.putULong("ipDNS2", IP32);
-        secondaryDNS = ip;
+        storeIPAddress(secondaryDNS, ip);
       }
     }
-    if ((param == 6) && (strlen(texte) <= 15)) // registre 6 : nom routeur
+    if ((param == 55) && (strlen(texte) <= 15)) // registre 55 : nom routeur
     {
       res = 0;
       preferences_nvs.putString("Rout", texte);
       strncpy(nom_routeur, texte, sizeof(nom_routeur) - 1);
       nom_routeur[sizeof(nom_routeur) - 1] = '\0';  // Assure la terminaison
     }
-    if ((param == 7) && (strlen(texte) <= 15)) // registre 7 : mdp routeur
+    if ((param == 56) && (strlen(texte) <= 15)) // registre 56 : mdp routeur
     {
       res = 0;
       preferences_nvs.putString("Mdp", texte);
@@ -2740,7 +2725,7 @@ uint8_t requete_Set_String(int param, const char *texte)
       mdp_routeur[sizeof(mdp_routeur) - 1] = '\0';  // Assure la terminaison
     }
 
-    if (param == 8)  // registre 8 : websocket On
+    if (param == 57)  // registre 57 : websocket On
     {
       if (isdigit(*texte))
       {
@@ -2755,14 +2740,14 @@ uint8_t requete_Set_String(int param, const char *texte)
         }
       }
     }
-    if (param == 9)  // registre 9 : adresse websocket
+    if (param == 58)  // registre 58 : adresse websocket
     {
       res = 0;
       preferences_nvs.putString("WSock", texte);
       strncpy(ip_websocket, texte, sizeof(ip_websocket) - 1);
       ip_websocket[sizeof(ip_websocket) - 1] = '\0';  // Assure la terminaison
     }
-    if (param == 10)  // registre 10 : websocket id : 1 à 10
+    if (param == 59)  // registre 59 : websocket id : 1 à 10
     {
       if (isdigit(*texte))
       {
@@ -2893,39 +2878,38 @@ uint8_t requete_GetReg(int reg, float *valeur) {
   uint8_t res = 1;
   uint8_t res2 = 1;
 
-  if (reg == 1)  // registre 1 : mode reseau
-  {
-    res = 0;
-    *valeur = mode_reseau;
-  }
-  if (reg == 2)  // registre 2 : nb_reset
-  {
-    res = 0;
-    *valeur = nb_reset;
-  }
+  // First try generic lookup in PARAMS table
+  size_t n = PARAMS_COUNT;
+  for (size_t i = 0; i < n; ++i) {
+    Param &p = PARAMS[i];
+    if (p.order != (uint8_t)reg) continue;
 
-  if (reg == 4)  // registre 4 : cycle lecture
-  {
-    res = 0;
-    *valeur = periode_cycle;
-  }
-  if (reg == 5)  // registre 5 : cycle rapide
-  {
-    res = 0;
-    *valeur = mode_rapide;
-  }
-  if (reg == 6)  // registre 6 : détail log
-  {
-    res = 0;
-    *valeur = log_detail;
-  }
+    // If it's a string entry, cannot return numeric here
+    if (p.type == STR) {
+      // Let requete_GetReg_appli or string-get handler handle it
+      break;
+    }
 
-  if (reg == 8)  // registre 8 : ski_graph : 1 valeur sur x
-  {
-    res = 0;
-    *valeur = skip_graph;
-    //Serial.printf("skip:%i\n\r", skip_graph);
-  }
+    if (p.var == nullptr) break;
+
+    switch (p.type) {
+      case U8:
+        *valeur = (float)(*((uint8_t*)p.var));
+        res = 0;
+        break;
+      case U16:
+        *valeur = (float)(*((uint16_t*)p.var));
+        res = 0;
+        break;
+      case U32:
+        *valeur = (float)(*((uint32_t*)p.var));
+        res = 0;
+        break;
+      default:
+        break;
+    }
+
+    if (!res) break; // found and set
   if (reg == 13)  // registre 13 : activation OTA
   {
     res = 0;
@@ -2953,11 +2937,12 @@ uint8_t requete_GetReg(int reg, float *valeur) {
     res = 0;
     *valeur = WiFi.RSSI();
   }
+}
 
   res2 = requete_GetReg_appli(reg, valeur);
 
   //if (!res) *valeur = (float)val16;
-  Serial.printf("val_get: %i %f %i\n\r", reg, *valeur, skip_graph);
+  if (log_detail>=4) Serial.printf("val_get: %i %f %i\n\r", reg, *valeur, skip_graph);
   return (res+res2-1);
 }
 
@@ -2971,22 +2956,9 @@ uint8_t requete_SetReg(int param, float valeurf)
 
   if (cpt_securite)
   {
-    if (param == 1)  // registre 1 : mode reseau
+    // Keep special-case behavior for reset (param 3)
+    if (param == 4)  // registre 4 : reset par watchdog
     {
-      if ((valeur >= 11) && (valeur <= 14)) {
-        res = 0;
-        mode_reseau = valeur;
-        Serial.printf("modif 1:%i\n\r", mode_reseau);
-        preferences_nvs.putUChar("reseau", valeur);
-      }
-    }
-    if (param == 2)  // registre 2 : nb de reset
-    {
-      res = 0;
-      nb_reset = valeur;
-      preferences_nvs.putUShort("nb_reset", nb_reset);
-    }
-    if (param == 3)  // registre 3 : reset par watchdog
       if (valeur == 13) {
         //ESP.restart();
         res = 0;
@@ -2995,59 +2967,86 @@ uint8_t requete_SetReg(int param, float valeurf)
         //param_wdt_delay = WDT_TIMEOUT * 12;
         esp_restart();  // Redémarrage logiciel sans effacer la RTC RAM
       }
+    }
 
-    if (param == 4)  // registre 4 : Periode cycle (en minutes)
+    // Try to find the parameter in the generic PARAMS table by order and write via NVS
     {
-      //#ifndef DEBUG
-      if ((valeur >= 2) && (valeur <= 60))  // entre 2 et 60 minutes
+      size_t n = PARAMS_COUNT;
+      for (size_t i = 0; i < n; ++i)
       {
-        res = 0;
-        periode_cycle = valeur;
-        preferences_nvs.putUChar("cycle", periode_cycle);
-        // modification du timer
-        modif_timer_cycle();
-      }
-    }
-    if (param == 5)  // registre 5 : cycle rapide =12
-    {
-      if ((valeur == 12) || (!valeur)) {
-        res = 0;
-        mode_rapide = valeur;
-        preferences_nvs.putUChar("Rap", mode_rapide);
-        modif_timer_cycle();
-      }
-    }
+        Param &p = PARAMS[i];
+        if (p.order != (uint8_t)param) continue;
 
-    if (param == 6)  // registre 6 : détail log
-    {
-      if (valeur <= 4) {
-        res = 0;
-        log_detail = valeur;
-        preferences_nvs.putUChar("LogD", log_detail);
+        // Only numeric params are handled by SetReg (U8/U16/U32)
+        if (p.type == STR) {
+          // can't set strings via numeric SetReg
+          break;
+        }
+
+        uint32_t minv = p.min16;
+        uint32_t maxv = p.max16;
+
+        // If min/max both zero, treat as no-range check (allow any value)
+        bool in_range = true;
+        if (minv != 0 || maxv != 0) {
+          if ((int32_t)valeur < (int32_t)minv || (int32_t)valeur > (int32_t)maxv) in_range = false;
+        }
+
+        if (!in_range) {
+          // Out of range -> do not write
+          break;
+        }
+
+        // Perform the write according to type
+        if (p.type == U8)
+        {
+          if (p.var != nullptr) {
+            uint8_t v = (uint8_t)valeur;
+            *((uint8_t*)p.var) = v;
+            if (p.key != nullptr && p.key[0] != '\0') preferences_nvs.putUChar(p.key, v);
+            res = 0;
+            // If changing cycle related value trigger timer update when appropriate
+            if (p.var == (void*)&periode_cycle || strcmp(p.key, "cycle") == 0) {
+              modif_timer_cycle();
+            }
+          }
+        }
+        else if (p.type == U16)
+        {
+          if (p.var != nullptr) {
+            uint16_t v = (uint16_t)valeur;
+            *((uint16_t*)p.var) = v;
+            if (p.key != nullptr && p.key[0] != '\0') preferences_nvs.putUShort(p.key, v);
+            res = 0;
+            if (p.var == (void*)&periode_cycle || strcmp(p.key, "cycle") == 0) {
+              modif_timer_cycle();
+            }
+          }
+        }
+        else if (p.type == U32)
+        {
+          if (p.var != nullptr) {
+            uint32_t v = (uint32_t)valeur;
+            *((uint32_t*)p.var) = v;
+            if (p.key != nullptr && p.key[0] != '\0') preferences_nvs.putULong(p.key, v);
+            res = 0;
+          }
+        }
+
+        // handled one entry -> break
+        break;
       }
     }
-
-    if (param == 7)  // registre 7 : delai ecoute websocket
+    if (param==1)  // log_detail
     {
-      if ((valeur) && (valeur <= 30)) {
-        res = 0;
-        DelaiWebsocket = valeur;
-        preferences_nvs.putUChar("DelWS", DelaiWebsocket);
-      }
-    }
-
-    if (param == 8)  // registre 8 : skip_graph
-    {
-      if ((valeur) && (valeur <= 50))  // entre 1 et 50
+      if (log_detail<5)
       {
-        res = 0;
-        skip_graph = (uint8_t)valeur;  // 1 valeur sur x
-        //Serial.printf("skip:%i\n\r", skip_graph);
-        preferences_nvs.putUChar("Skip", skip_graph);
+        apply_log_detail(log_detail);
+        Serial.printf("log_detail:%i\n\r", log_detail);
+        //esp_log_level_t lvl = esp_log_level_get("mjpegw");
+        //Serial.printf("get level = %d\n", (int)lvl);
       }
     }
-
-
     if (param == 11)  // registre 11 : réglage date numérique ddmmyy
     {
       if (setRtcDateFromNumericValue(valeur))
@@ -3241,9 +3240,8 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   p += sprintf(p, "\"TextV\":%i,", TextV);  // Temp ext de la veille
   p += sprintf(p, "\"TintV\":%i,", TintV);  // Temp ext de la veille
   
-  p += sprintf(p, "\"PIR_D\":%i,", compteur_detection); // derniere 15min
-  p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
-
+  // ajout des paramètres de l'application
+  p = requete_status_appli(p);
 
   // Tableaux : E(erreurs) T(temp)
   if (!type)  // pas d'envoi des graphiques si type=1(maj)
@@ -3595,9 +3593,9 @@ void debounceCallback(TimerHandle_t xTimer)
 
         // Incrémenter/décrémenter le compteur en fonction de l'état lu
         if (buttonState == LOW) {
-            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i] ++;
+            if (pressCounter[i] < VALIDATION_COUNT) pressCounter[i]++;
         } else {
-            if (pressCounter[i] > 0) pressCounter[i] --;
+            if (pressCounter[i] > 0) pressCounter[i]--;
         }
 
         // Vérification si l'état a changé et atteint un seuil
@@ -3694,7 +3692,7 @@ void getActiveIndex(uint8_t * page, uint16_t *index)
       }
     }
   }
-  Serial.printf("get index : page:%i index:%i\n\r", *page, *index);
+  if (log_detail>=4) Serial.printf("get index : page:%i index:%i\n\r", *page, *index);
 }
 
 // trouve index dans page 0 ou 1
@@ -3770,7 +3768,7 @@ void writeLog(uint8_t code, uint8_t c1, uint8_t c2, uint8_t c3, const char* mess
     //esp_err_t err = ESP_OK;
 
     if (err == ESP_OK) {
-      Serial.printf("Log écrit !, size:%d\n\r", size);
+      if (log_detail>=4) Serial.printf("Log écrit !, size:%d\n\r", size);
       activeIndex++;  // Avance pour le prochain log
     } else {
       Serial.printf("Erreur écriture log: %s\n", esp_err_to_name(err));
@@ -3904,7 +3902,7 @@ void getActiveIndexG(uint8_t * page, uint16_t *index)
       }
     }
   }
-  Serial.printf("get index G : page:%i index:%i\n\r", *page, *index);
+  if (log_detail>=4) Serial.printf("get index G : page:%i index:%i\n\r", *page, *index);
 }
 
 // trouve index dans page 0 ou 1
@@ -4151,6 +4149,13 @@ void passage_deep_sleep(uint64_t temps)
 {
   uint64_t sleep_us = min(temps, 60ULL * 60ULL * 1000000ULL);
 
+  // If the global flag pas_de_veille is set, skip entering deep sleep
+  if (pas_de_veille) {
+    Serial.printf("passage_deep_sleep(): pas_de_veille==1 -> skipping deep sleep (requested %llu us)\n", (unsigned long long)sleep_us);
+    Serial.flush();
+    return;
+  }
+
   Serial.printf("PIN_REVEIL state = %d %d\n", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
   Serial.flush();
 
@@ -4290,9 +4295,12 @@ uint8_t testConnexionGoogle() {
     int httpCode = http.GET();
 
     if (httpCode > 0) {
-      Serial.printf("[HTTP] Réponse code : %d\n", httpCode);
-      String payload = http.getString();
-      Serial.println(payload.substring(0, 200)); // Affiche les 200 premiers caractères
+      if (log_detail>=4) 
+      {
+        Serial.printf("[HTTP] Réponse code : %d\n", httpCode);
+        String payload = http.getString();
+        Serial.println(payload.substring(0, 200)); // Affiche les 200 premiers caractères
+      }
     } else {
       Serial.printf("[HTTP] Échec, erreur : %s\n", http.errorToString(httpCode).c_str());
       err=2;
@@ -4427,7 +4435,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
 
     }
 
-    if (!res) {
+    if (!res)  {
       char *p = json_response;
       *p++ = '{';
       if (type==1)  p += snprintf(p, json_response + sizeof(json_response) - p -2, "\"reg\":\"%s\",", reg.c_str());
@@ -4442,9 +4450,10 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
       *p++ = '}';
       *p++ = 0;
       //#ifdef DEBUG
-      Serial.println(json_response);
-      //delay(200);
-      //#endif
+      if (log_detail>=4) {
+        Serial.println(json_response);
+        delay(200);
+      }
       request->send(200, "application/json", json_response);
     } else {
       request->send(400, "text/plain", "erreur");
@@ -4522,7 +4531,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
         snprintf(json_response, sizeof(json_response), "{\"val\":\"%s\"}", buffer_dmp);
         res2=0;
       }
-      Serial.printf("Retour Get: res2:%i %s=%f type:%i %s\n", res2, reg.c_str(), valeur, type, json_response);
+      if (log_detail>=4) Serial.printf("Retour Get: res2:%i %s=%f type:%i %s\n", res2, reg.c_str(), valeur, type, json_response);
     }
 
     if (!res2)  // 0:ok  1:erreur
@@ -4585,6 +4594,11 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
   });
+
+  #ifdef SDCARD
+    server_routes_SDCARD();
+  #endif
+
 }
 
 const char* dumpTasksInfo() {
@@ -4722,11 +4736,11 @@ void diagnoseWiFiError() {
   
   // 2. Configuration IP
   Serial.println("2. Configuration IP :");
-  Serial.printf("   - IP statique: %s\n", local_ip.toString().c_str());
-  Serial.printf("   - Gateway: %s\n", gateway.toString().c_str());
-  Serial.printf("   - Subnet: %s\n", subnet.toString().c_str());
-  Serial.printf("   - DNS1: %s\n", primaryDNS.toString().c_str());
-  Serial.printf("   - DNS2: %s\n", secondaryDNS.toString().c_str());
+  Serial.printf("   - IP statique: %s\n", makeIPAddress(local_ip).toString().c_str());
+  Serial.printf("   - Gateway: %s\n", makeIPAddress(gateway).toString().c_str());
+  Serial.printf("   - Subnet: %s\n", makeIPAddress(subnet).toString().c_str());
+  Serial.printf("   - DNS1: %s\n", makeIPAddress(primaryDNS).toString().c_str());
+  Serial.printf("   - DNS2: %s\n", makeIPAddress(secondaryDNS).toString().c_str());
   
   // 3. État actuel du WiFi
   Serial.println("3. État WiFi actuel :");
@@ -4802,7 +4816,7 @@ void diagnoseWiFiError() {
 
 // Fonction de connexion WiFi avec diagnostic amélioré
 uint8_t connectWiFiWithDiagnostic() {
-  Serial.println("\n=== TENTATIVE DE CONNEXION WiFi ===");
+  if (log_detail>=4) Serial.println("\n=== TENTATIVE DE CONNEXION WiFi ===");
   
   // Vérifications préliminaires
   if (strlen(nom_routeur) == 0) {
@@ -4816,8 +4830,14 @@ uint8_t connectWiFiWithDiagnostic() {
     
     // 🔍 DIAGNOSTIC: Forcer le canal WiFique si définie
   if (local_ip[0] != 0) {
-    Serial.printf("Configuration IP statique: %s\n", local_ip.toString().c_str());
-    if (!WiFi.config(local_ip, gateway, subnet, primaryDNS, secondaryDNS)) {
+      IPAddress ipLocal = makeIPAddress(local_ip);
+      IPAddress ipGateway = makeIPAddress(gateway);
+      IPAddress ipSubnet = makeIPAddress(subnet);
+      IPAddress ipPrimaryDNS = makeIPAddress(primaryDNS);
+      IPAddress ipSecondaryDNS = makeIPAddress(secondaryDNS);
+
+      Serial.printf("Configuration IP statique: %s\n", ipLocal.toString().c_str());
+      if (!WiFi.config(ipLocal, ipGateway, ipSubnet, ipPrimaryDNS, ipSecondaryDNS)) {
       Serial.println("❌ ERREUR: Échec de configuration IP statique");
       return 2;
     }
@@ -4826,7 +4846,7 @@ uint8_t connectWiFiWithDiagnostic() {
   }
   
   // Tentative de connexion
-  Serial.println("Tentative de connexion...");
+  if (log_detail>=4) Serial.println("Tentative de connexion...");
   WiFi.begin(nom_routeur, mdp_routeur);
   
   // Attente de connexion avec feedback
@@ -4835,7 +4855,7 @@ uint8_t connectWiFiWithDiagnostic() {
   int dots = 0;
   
   while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < timeout) {
-    delay(500);
+    delay(100);
     Serial.print(".");
     dots++;
     if (dots % 20 == 0) Serial.println(); // Retour à la ligne tous les 10 secondes
@@ -4845,26 +4865,71 @@ uint8_t connectWiFiWithDiagnostic() {
       esp_task_wdt_reset();
     #endif
   }
-  
-  Serial.println(); // Retour à la ligne final
-  
+
   // Vérification du résultat
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("✅ WiFi connecté avec succès !");
-    Serial.printf("   - Adresse IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("   - RSSI: %d dBm\n", WiFi.RSSI());
-    Serial.printf("   - Canal: %ld\n", WiFi.channel());
-    Serial.printf("   - Masque: %s\n", WiFi.subnetMask().toString().c_str());
-    Serial.printf("   - Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-    Serial.printf("   - DNS: %s\n", WiFi.dnsIP().toString().c_str());
+    if (log_detail>=4) {
+      Serial.println("✅ WiFi connecté avec succès !");
+      Serial.printf("   - Canal: %ld\n", WiFi.channel());
+      Serial.printf("   - Masque: %s\n", WiFi.subnetMask().toString().c_str());
+      Serial.printf("   - Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+      Serial.printf("   - DNS: %s\n", WiFi.dnsIP().toString().c_str());
+    }
+    if (log_detail>=3) {
+      Serial.printf("   - Adresse IP: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("   - RSSI: %d dBm\n", WiFi.RSSI());
+    }
     // Optimisation consommation : activation du Modem Sleep
     WiFi.setSleep(false);
     return 0;
-  } else {
+
+     } else {
     Serial.println("❌ ÉCHEC de connexion WiFi");
     diagnoseWiFiError();
     return 3;
   }
+}
+
+
+// Fonction de connexion WiFi rapide
+uint8_t connectWiFiRapide()
+{  
+  // Vérifications préliminaires
+  if (strlen(nom_routeur) == 0) {
+    Serial.println("❌ ERREUR: SSID non configuré");
+    return 1;
+  }
+  
+  Serial.printf("Connexion au réseau: %s\n", nom_routeur);
+    // Configuration WiFi en mode Station pour ESP-NOW
+    WiFi.mode(WIFI_STA); 
+    
+    // 🔍 DIAGNOSTIC: Forcer le canal WiFique si définie
+  if (local_ip[0] != 0) {
+      IPAddress ipLocal = makeIPAddress(local_ip);
+      IPAddress ipGateway = makeIPAddress(gateway);
+      IPAddress ipSubnet = makeIPAddress(subnet);
+      IPAddress ipPrimaryDNS = makeIPAddress(primaryDNS);
+      IPAddress ipSecondaryDNS = makeIPAddress(secondaryDNS);
+
+      Serial.printf("Configuration IP statique: %s\n", ipLocal.toString().c_str());
+      if (!WiFi.config(ipLocal, ipGateway, ipSubnet, ipPrimaryDNS, ipSecondaryDNS)) {
+      Serial.println("❌ ERREUR: Échec de configuration IP statique");
+      return 2;
+    }
+  } else {
+    Serial.println("Configuration IP automatique (DHCP)");
+  }
+  
+  // Tentative de connexion
+  if (log_detail>=4) Serial.println("Tentative de connexion...");
+  WiFi.begin(nom_routeur, mdp_routeur);
+  
+  // Fin de la fonction connectWiFiRapide()
+
+  //Serial.println(); // Retour à la ligne final
+
+  return 0; // Indiquer que la fonction s'est terminée sans erreur
 }
 
 // Fonction de protection UART pendant la connexion WiFi
@@ -4911,6 +4976,7 @@ uint16_t decod_asc16 (uint8_t * index)
 	return val;
 }
 
+//#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 //#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status)
