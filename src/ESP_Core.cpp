@@ -199,8 +199,10 @@ RTC_NOINIT_ATTR uint8_t mode_reseau=13;  //  0:pas de reseau 11:wifi_AP_usine  1
 
 RTC_NOINIT_ATTR char nom_routeur[16]="";
 RTC_NOINIT_ATTR char mdp_routeur[16]="";
+RTC_NOINIT_ATTR char mac_gw_str[20]=""; // 34:34:23:23:23:12
 RTC_NOINIT_ATTR char latitude[16]="";
 RTC_NOINIT_ATTR char longitude[16]="";
+RTC_NOINIT_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
 
 unsigned long last_remote_Tint_time = 0, last_remote_Text_time=0, last_remote_heure_time=0;
 
@@ -774,8 +776,8 @@ void taskHandler(void *parameter) {
                     #endif
 
                     if (force_stay_awake) {
-                        wake_up_time = millis() + 50000; // Prolonger sur réception  message UART
-                        Serial.println("Activité UART détectée : prolongation du délai de 30s.");
+                        wake_up_time = millis() + prolong_veille*1000; // Prolonger sur réception  message UART
+                        Serial.printf("Activité UART détectée : prolongation du délai de %is.\n", prolong_veille);
                     }
                     
                     UartMessage_t uartMsg;
@@ -988,6 +990,13 @@ void init_ram_variables()
   nb_err_reseau=0;
   Tint=20.0;
   Text=10.0;
+  for (uint8_t i=0; i<NB_Graphique; i++)
+  {
+    for (uint8_t j=0; j<NB_Val_Graph; j++)
+    {
+      graphique[j][i]=0;
+    }
+  }
   init_ram_variables_appli();
 }
 
@@ -1255,7 +1264,8 @@ void setup()
   resetReason0 = (uint8_t) esp_reset_reason();
   Serial.begin(115200);
   
-  if (log_detail>=1) Serial.printf("milli A: %lu  boot_rapide:%i log_detail:%i\n", t, boot_rapide, log_detail);  // 39ms
+  if (log_detail>=2) Serial.printf("milli A: %lu  boot_rapide:%i log_detail:%i\n", t, boot_rapide, log_detail);  // 39ms
+
 
   // Cause réveil du deep/light_sleep (undefined si pas de reveil deep/light sleep)
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause(); // 2:ext0(1pin) 3:Ext1(2pins) 7:GPIO 4:Timer
@@ -1285,8 +1295,8 @@ void setup()
       if (wakeup_pins & (1ULL << PIN_REVEIL)) {
           if (log_detail>=3) Serial.println("Réveil par PIN1");
           force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
-          wake_up_time = millis() + 30000; // Prolonger si Bouton réveil est appuyé
-          if (log_detail>=3) Serial.println("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour 30s ***");
+          wake_up_time = millis() + prolong_veille*1000; // Prolonger si Bouton réveil est appuyé
+          if (log_detail>=3) Serial.printf("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour %is ***\n", prolong_veille);
       }
 
       if (wakeup_pins & (1ULL << PIN_REVEIL2)) {
@@ -1397,9 +1407,9 @@ void setup()
     cpt_securite = 10;
   #endif
 
-  if (log_detail>=2) Serial.printf("milli E: %lu\n", millis());
+  if (log_detail>=3) Serial.printf("milli E: %lu\n", millis());
 
-  if (log_detail>=3) Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
+  if (log_detail>=2) Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
   setup_0();   //  --- valeur initiales des graphiques
 
   //if (type_reveil>=4) // bouton ou toujours actif
@@ -1479,6 +1489,7 @@ void setup()
   }
 
   // ------  NVS Eeprom  ---------------------
+
   // lecture nvs : 9 millisecondes pour 37 paramètres
   preferences_nvs.begin("NVS_App", false);
 
@@ -1498,6 +1509,14 @@ void setup()
       {
           apply_log_detail(log_detail);
           Serial.printf("log_detail:%i\n\r", log_detail);
+      }
+      if (i==61) // adresse Mac Gateway
+      {
+        if (!parseMacString(mac_gw_str, mac_gw))
+        {
+            Serial.println("MAC Serveur invalide");
+        }
+
       }
     }
     log_detail=4;
@@ -1553,15 +1572,15 @@ void setup()
       }
     }*/
   }
-  if (log_detail>=2) Serial.printf("milli F: %lu\n", millis());
+  if (log_detail>=3) Serial.printf("milli F: %lu\n", millis());
 
   setup_1();  // --------------   initialisation sonde temperature--10ms----------
 
-   if (log_detail>=2) Serial.printf("milli G: %lu\n", millis());
+   if (log_detail>=3) Serial.printf("milli G: %lu\n", millis());
 
    setup_appli();
 
-   if (log_detail>=2) Serial.printf("milli G2: %lu\n", millis());
+   if (log_detail>=3) Serial.printf("milli G2: %lu\n", millis());
 
   // -------------- partition "log_flash" custom  pour Write-log -------------------
 
@@ -1581,9 +1600,7 @@ void setup()
       delay(500 + random(1, 1001) );
     }
 
-    if (log_detail>=2) Serial.println("AAA");
     writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
-    if (log_detail>=2) Serial.println("BBB");
 
     if (boot_rapide < 2) delay(500);
 
@@ -2599,13 +2616,32 @@ uint8_t requete_Set_Action(const char *reg, const char *data)
       *ptr = 42+var2;  // provoque aussi un crash
     }
     
-    // redémarrage soft
+    // redémarrage soft avec rtc=0
     if (strcmp(reg, "RST0") == 0) 
     { 
       res=0; 
       writeLog('S', 9, 0, 0, "Boot S");
       delay(1000);
+      rtc_magic = 0x08843211;
+      esp_restart();  // Redémarrage logiciel en redemarrant la RTC RAM
+    }
+
+    // redémarrage soft avec rtc=1
+    if (strcmp(reg, "RST1") == 0) 
+    { 
+      res=0; 
+      writeLog('S', 9, 0, 0, "Boot S");
+      delay(1000);
       esp_restart();  // Redémarrage logiciel sans effacer la RTC RAM
+    }
+        // passage veille profonde deepsleep
+    if (strcmp(reg, "VEI") == 0) 
+    { 
+      res=0; 
+      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+      if (mode_rapide==12)
+      sleep_time = (uint64_t)periode_cycle * 1000000;
+      passage_deep_sleep(sleep_time);  // 30ULL * 1000000ULL); //
     }
 
     if (strcmp(reg, "PING0") == 0) 
@@ -3080,7 +3116,7 @@ uint8_t requete_SetReg(int param, float valeurf)
             if (p.key != nullptr && p.key[0] != '\0') preferences_nvs.putUChar(p.key, v);
             res = 0;
             // If changing cycle related value trigger timer update when appropriate
-            if (p.var == (void*)&periode_cycle || strcmp(p.key, "cycle") == 0) {
+            if (p.var == (void*)&periode_cycle || (p.var == (void*)&mode_rapide)) {  //strcmp(p.key, "cycle") == 0)
               modif_timer_cycle();
             }
           }
@@ -4202,7 +4238,7 @@ void loop()
     // Si on est en mode "Stay Awake" (réveil par bouton), on attend 30s
     if (force_stay_awake) {
       if (millis() > wake_up_time) {
-         Serial.println("Délai de configuration de 30s expiré. Passage en Deep Sleep...");
+         Serial.printf("Délai de configuration de %is expiré. Passage en Deep Sleep...\n", prolong_veille);
          delay(100);
 
          uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
@@ -4232,7 +4268,7 @@ void passage_deep_sleep(uint64_t temps)
 
   if (log_detail>=3) Serial.printf("PIN_REVEIL state = %d %d\n", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
 
-  if (log_detail>=3) Serial.printf("Passage deep sleep pour %llu milis:%lu\n", (unsigned long long)sleep_us, millis());
+  if (log_detail>=2) Serial.printf("Passage deep sleep pour %llu milis:%lu\n", (unsigned long long)sleep_us, millis());
 
   esp_sleep_enable_timer_wakeup(temps);
 
@@ -4491,8 +4527,8 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
     #ifdef ESP_VEILLE
       // Si une commande /get arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
-      wake_up_time = millis() + 40000;  // prolongation si requete get
-      Serial.println("Activité /get détectée : prolongation du délai de 30s.");
+      wake_up_time = millis() + prolong_veille*1000;  // prolongation si requete get
+      if (log_detail >=3) Serial.printf("Activité /get détectée : prolongation du délai de %is.\n", prolong_veille);
     #endif
 
     if ((request->hasParam("type")) && (request->hasParam("reg")))
@@ -4554,8 +4590,8 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
     #ifdef ESP_VEILLE
       // Si une commande /set arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
-      wake_up_time = millis() + 40000;  // prolongation si requete set
-      Serial.println("Activité /set détectée : prolongation du délai de 30s.");
+      wake_up_time = millis() + prolong_veille*1000;  // prolongation si requete set
+      Serial.printf("Activité /set détectée : prolongation du délai de %is.\n", prolong_veille);
     #endif
 
     buffer_dmp[0]=0;

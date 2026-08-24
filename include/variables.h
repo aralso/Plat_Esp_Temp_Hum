@@ -142,6 +142,8 @@ extern uint8_t gateway[4];
 extern uint8_t subnet[4];
 extern uint8_t primaryDNS[4];
 extern uint8_t secondaryDNS[4];
+extern char mac_gw_str[20];
+
 extern char nom_routeur[];
 extern char mdp_routeur[];
 extern uint8_t websocket_on;
@@ -312,7 +314,7 @@ void passage_deep_sleep(uint64_t temps);
 extern float Vbatt_ESP;   // Tension batterie ESP
 extern struct tm timeinfo;
 extern const int BTN_PIN[];  // Pins des boutons
-
+extern uint8_t mac_gw[6];
 
 typedef enum {
   EVENT_NONE = 0,

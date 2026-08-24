@@ -8,7 +8,7 @@ Param PARAMS[] = {
 
   // cycle and network-related registers mapped to SetReg order numbers
   {"Rap", 5, U8, 0, 255, 0, 0, nullptr, &mode_rapide, 0},           // registre 5 : cycle rapide
-  {"cycle", 6, U16, 10, 120, 15, 0, nullptr, &periode_cycle, 0},    // registre 4 : période du cycle (min)
+  {"cycle", 6, U8, 10, 120, 15, 0, nullptr, &periode_cycle, 0},    // registre 4 : période du cycle (min)
   {"DelWS", 7, U8,  1, 30, 1, 0, nullptr, &DelaiWebsocket, 0},      // registre 6 : délai écoute websocket (s)
   {"Skip", 8, U8, 1, 50, 2,0, nullptr, &skip_graph, 0},             // registre 7 : skip graph
 
@@ -33,6 +33,7 @@ Param PARAMS[] = {
 
 
   // WiFi channel (SetReg_appli uses 41/42)
+  {"Esp", 40, U8, 0, 1, 1, 0, nullptr, &esp_now_actif, 0},         // registre 40 : activation esp_now
   {"lWc", 41, U8, 0, 13, 0, 0, nullptr, &last_wifi_channel, 0},         // registre 41 : last_wifi_channel (not persisted)
   {"WifiC", 42, U8, 1, 13, 1, 0, nullptr, &WIFI_CHANNEL, 0},         // registre 42 : canal wifi preferentiel (persisted)
   // 43:puissance wifi, 44:mode wifi
@@ -40,24 +41,25 @@ Param PARAMS[] = {
   // IPv4 addresses stored as four bytes
   {"ipAdd", 50, IP, 0, 0xFFFFFFFFu, 192, 0, nullptr, local_ip, 4},
   {"ipGat", 51, IP, 0, 0xFFFFFFFFu, 192, 0, nullptr, gateway, 4},
-  {"ipSub", 52, IP, 0, 0xFFFFFFFFu, 255, 0, nullptr, subnet, 4},       // 255.255.255.0
-  {"ipDNS", 53, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, primaryDNS, 4},   // 8.8.8.8
-  {"ipDNS2", 54, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, secondaryDNS, 4},// 8.8.4.4
-  {"Rout", 55, STR, 0, 0, 0, 0,  "rout", nom_routeur, 16},                // nom routeur  
-  {"Mdp", 56, STR, 0, 0, 0, 0, "mdp", mdp_routeur, 16},                
-  {"WSOn", 57, U8, 0, 2, 1, 0, nullptr, &websocket_on, 0},            // 0 ou 1
-  {"WSock", 58, STR, 0, 0, 0, 0, "websocket", ip_websocket, 40},              // websocket adresse
-  {"WSId", 59, U8, 0, 9, 9, 0,nullptr, &id_websocket, 0},             // 1, 2, 3
+  {"ipSub", 52, IP, 0, 0xFFFFFFFFu, 255, 0, nullptr, subnet, 4},          // 255.255.255.0
+  {"ipDNS", 53, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, primaryDNS, 4},        // 8.8.8.8
+  {"ipDNS2", 54, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, secondaryDNS, 4},     // 8.8.4.4
+  {"Rout", 55, STR, 0, 0, 0, 0,  "garches", nom_routeur, 16},             // nom routeur  
+  {"Mdp", 56, STR, 0, 0, 0, 0, "196492380", mdp_routeur, 16},                
+  {"WSOn", 57, U8, 0, 2, 1, 0, nullptr, &websocket_on, 0},                 // 0 ou 1
+  {"WSock", 58, STR, 0, 0, 0, 0, "websocket", ip_websocket, 40},          // ws://webcam.hd.free.fr:8081
+  {"WSId", 59, U8, 0, 9, 9, 0,nullptr, &id_websocket, 0},                 // 1, 2, 3
+  {"MacGW", 61, STR, 0, 0, 0, 0,"00:00:00:00:00:00", mac_gw_str, 20},      // adresse mac gateway
 
   // Variables Appli :
-  {"CaTpsMx", 60, U8, 1, 240, 15, 0,nullptr, &Capt_tps_max, 0},           // tps max entre 2 mesures (minutes) 1min à 4h  
-  {"CaSeuil", 61, U8, 0, 100, 30, 0,nullptr, &Capt_seuil_temp, 0},        // 0:pas de seuil(chaque lecture), 1:seuil 0,01°C, 30:0,3°C  
-  {"CaNb", 62, U8, 1, 12, 2, 0,nullptr, &Capt_nb_val_max, 0},             // 0:inactif 1:à chaque lecture, 2:2val max
-  {"CaTps", 63, U16, 10, 600, 300, 0,nullptr, &Capt_tps_total_max, 0},    // tps envoi max en minutes : 10min à 10h
-  {"DelD", 64, U8, 1, 60, 10, 0, nullptr, &delai_detection, 0},        // registre 14 : delai entre detections (s)
-  {"CalT", 65, U16, 1, 5000, 1000, 0, nullptr, &calib_temp, 0},        // registre 65 : calibration_temperature (0:pas de calibration, 1:calibration)
-  {"CalH30", 66, U16, 100, 500, 300, 0, nullptr, &calib_hygro1, 0},        // registre 66 : calibration_hygro30 (0:pas de calibration, 1:calibration)
-  {"CalH80", 67, U16, 600, 1000, 800, 0, nullptr, &calib_hygro2, 0},        // registre 67 : calibration_hygro80 (0:pas de calibration, 1:calibration)
+  {"CaTpsMx", 70, U8, 1, 240, 15, 0,nullptr, &Capt_tps_max, 0},           // tps max entre 2 mesures (minutes) 1min à 4h  
+  {"CaSeuil", 71, U8, 0, 100, 30, 0,nullptr, &Capt_seuil_temp, 0},        // 0:pas de seuil(chaque lecture), 1:seuil 0,01°C, 30:0,3°C  
+  {"CaNb", 72, U8, 1, 12, 2, 0,nullptr, &Capt_nb_val_max, 0},             // 0:inactif 1:à chaque lecture, 2:2val max
+  {"CaTps", 73, U16, 10, 600, 300, 0,nullptr, &Capt_tps_total_max, 0},    // tps envoi max en minutes : 10min à 10h
+  {"DelD", 74, U8, 1, 60, 10, 0, nullptr, &delai_detection, 0},        // registre 14 : delai entre detections (s)
+  {"CalT", 75, U16, 1, 5000, 1000, 0, nullptr, &calib_temp, 0},        // registre 65 : calibration_temperature (0:pas de calibration, 1:calibration)
+  {"CalH30", 76, U16, 100, 500, 300, 0, nullptr, &calib_hygro1, 0},        // registre 66 : calibration_hygro30 (0:pas de calibration, 1:calibration)
+  {"CalH80", 77, U16, 600, 1000, 800, 0, nullptr, &calib_hygro2, 0},        // registre 67 : calibration_hygro80 (0:pas de calibration, 1:calibration)
 
 };
 

@@ -303,14 +303,14 @@ const char index_html[] PROGMEM = R"rawliteral(
                   43 : puissance wifi<br>
                   44 : wifi_sleep (0,1,2)<br>
                   45 : (L)rssi wifi<br>
-                  60 : Capt:Periode max(min)<br>                  
-                  61 : Capt:Seuil temp(0.01°C)<br>                  
-                  62 : Capt envoi:Nb val max<br>                  
-                  63 : Capt envoi:Tps total(min)<br>                  
-                  64 : pause entre detections (sec)<br>
-                  65 : calib température<br>
-                  66 : calib hygro30<br>
-                  67 : calib hygro80<br>
+                  70 : Capt:Periode max(min)<br>                  
+                  71 : Capt:Seuil temp(0.01°C)<br>                  
+                  72 : Capt envoi:Nb val max<br>                  
+                  73 : Capt envoi:Tps total(min)<br>                  
+                  74 : pause entre detections (sec)<br>
+                  75 : calib température<br>
+                  76 : calib hygro30<br>
+                  77 : calib hygro80<br>
                   <br>
 
               <div class="input-group" id="set-regT-group">
@@ -337,18 +337,18 @@ const char index_html[] PROGMEM = R"rawliteral(
                   </div>
               </div>
               <hr style="width:100px">
-              <p> 1 : adresse IP<br>
-                  2 : gateway IP<br>
-                  3 : subnet IP<br>
-                  4 : DNS primaire<br>
-                  5 : DNS secondaire<br>
-                  6 : nom routeur<br>
-                  7 : mdp routeur<br>
-                  8 : websocket On (1-2)<br>
-                  9 : websocket<br>
-                  10 : websock id<br>
-                  11 : (L)adresse Mac module<br>
-                  12 : adresse Mac Serveur<br>
+              <p> 50 : adresse IP<br>
+                  51 : gateway IP<br>
+                  52 : subnet IP<br>
+                  53 : DNS primaire<br>
+                  54 : DNS secondaire<br>
+                  55 : nom routeur<br>
+                  56 : mdp routeur<br>
+                  57 : websocket On (1-2)<br>
+                  58 : websocket<br>
+                  59 : websock id<br>
+                  60 : (L)adresse Mac module<br>
+                  61 : adresse Mac Serveur<br>
     
 
             <div>
