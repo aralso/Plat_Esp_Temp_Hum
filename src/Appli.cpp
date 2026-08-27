@@ -65,13 +65,14 @@ RTC_NOINIT_ATTR uint8_t cpt24h_batt;
 
 volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
 volatile int ackChannel = -1;       // canal où ça a marché
+RTC_NOINIT_ATTR uint8_t num_sequentiel;  // pour Ack
 
 extern uint16_t nb_err_reseau;
 extern  uint16_t TextV, TintV, HumV, HAV;  // pour stockage dans la partition log_flashG
 
 
-//void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
-void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+//void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
 //void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -130,6 +131,9 @@ void init_10_secondes()
 //setup au debut
 void setup_0()
 {
+
+   BTN_PIN[0] = PIN_REVEIL;
+   BTN_PIN[1] = PIN_REVEIL2;
 
   #ifdef ESP32_uPesy
     pinMode(PIN_Vbatt, INPUT);
@@ -240,7 +244,7 @@ void setup_2()
     uint8_t current_channel;
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_channel, &second);
-    Serial.printf("Canal WiFi AVANT config ESP-NOW: %d\n", current_channel);
+    Serial.printf("Canal WiFi AVANT config ESP-NOW: %d\n\r", current_channel);
     
     // Forcer le canal si nécessaire (doit correspondre au routeur)
     // esp_wifi_set_promiscuous(true);
@@ -251,28 +255,20 @@ void setup_2()
       Serial.println("Erreur initialisation ESP-NOW");
       return;
     }
-    esp_now_register_recv_cb(OnDataRecv);
-    
-    // Vérifier le canal après init
-    esp_wifi_get_channel(&current_channel, &second);
-    
-    Serial.println("\n\n======================================");
-    Serial.println("🔵 ESP-NOW Initialisé (RÉCEPTEUR)");
-    Serial.print("   MAC Address module: ");
     //if ((mode_reseau==13) )
     //else
     //  Serial.println(WiFi.softAPmacAddress());
     Serial.println(WiFi.macAddress());
 
     // Stockage de l'adresse MAC dans le tableau mac_gw[6]
-    Serial.printf("   MAC dest : %02X:%02X:%02X:%02X:%02X:%02X\n",
+    Serial.printf("   MAC dest : %02X:%02X:%02X:%02X:%02X:%02X\n\r",
             mac_gw[0], mac_gw[1], mac_gw[2],
             mac_gw[3], mac_gw[4], mac_gw[5]);
 
 
-    Serial.printf("   Canal WiFi: %d\n", current_channel);
+    Serial.printf("   Canal WiFi: %d\n\r", current_channel);
     Serial.println("   En attente de messages...");
-    Serial.println("======================================\n\n");
+    Serial.println("======================================\n\r");
     delay(2000); // 2 secondes de pause pour lire
 
   #else  // Si veille
@@ -299,9 +295,9 @@ void setup_appli()
     if (type_reveil == 1)  event_cycle(); // réveil par timer
     else 
     {
-      if (log_detail>=2) Serial.printf("milli H1: %lu\n", millis());
+      if (log_detail>=2) Serial.printf("milli H1: %lu\n\r", millis());
       envoi_temp_hygro();  // 30ms
-       if (log_detail>=2) Serial.printf("milli H3: %lu\n", millis());
+       if (log_detail>=2) Serial.printf("milli H3: %lu\n\r", millis());
     }
     uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 0, appui => 1
     if (log_detail>=2)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
@@ -316,9 +312,14 @@ void setup_appli()
 
 }
 
-void init_ram_variables_appli()
+void init_rtc_variables_appli()
 {
   cpt24h_batt=6;   // compteur de jours
+  num_sequentiel=0;
+}
+
+void init_ram_variables_appli()
+{
 }
 
 void appli_event_on(systeme_eve_t evt)
@@ -350,7 +351,7 @@ void enreg_24h( uint8_t veille)
   if (Nb_jours_Batt_log)
   {
     float vbatt = readBatteryVoltage();
-    Serial.printf("Tension Batterie : %.2f V\n", vbatt);
+    Serial.printf("Tension Batterie : %.2f V\n\r", vbatt);
 
     if ((Seuil_batt_arret_ESP) && (vbatt < Seuil_batt_arret_ESP) && (vbatt > 2400))
     {
@@ -362,7 +363,7 @@ void enreg_24h( uint8_t veille)
     {
       cpt24h_batt=0;
 
-      //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n", vbatt, Vbatt_Th);
+      //Serial.printf("Tension Batterie 24h : %.2f %.2f V\n\r", vbatt, Vbatt_Th);
       if (veille)
       {
         writeLog('K', (uint8_t)((vbatt-2.0)*100), 0, 0, "24H_Res");
@@ -438,15 +439,17 @@ void enreg_24h( uint8_t veille)
   {
     Message_EspNow message;
 
-    message.destinataire = SERVER_ADD & 0x80;  // 0x80 = message hexa
+    message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
     message.emetteur = ADDRESS;
     message.code = 'C';
     message.code2 = 'J';
+    num_sequentiel++;
+    message.num_seq = num_sequentiel;
 
     uint8_t pos = 0;
     payloadWrite(message.payload, pos, tempI);
     payloadWrite(message.payload, pos, Hum);
-    message.longueur = 5 + pos - 3;
+    message.longueur = 3 + pos;
 
     uint8_t result = envoi_data_gateway(message);
 
@@ -465,7 +468,7 @@ void appli_event_off(systeme_eve_t evt)
   Serial.printf("Bouton on-Evenement off : %i\n\r", evt.data);
 }
 
-char* requete_status_appli(char *p)
+char* requete_status_appli(char *json_response, char *p, uint8_t type)
 {
   p += sprintf(p, "\"PIR_D\":%i,", compteur_detection); // derniere 15min
   p += sprintf(p, "\"PIR_V\":%i,", PIRV); // veille
@@ -522,7 +525,7 @@ uint8_t requete_Set_appli (String param, float valf)
       Vbatt_Th = valf;
       Vbatt_Th_I = 1;
 
-      Serial.printf("Réception Vbatt Distante : %.2fV\n", Vbatt_Th);
+      Serial.printf("Réception Vbatt Distante : %.2fV\n\r", Vbatt_Th);
     }*/
 
 
@@ -565,19 +568,6 @@ uint8_t requete_Get_String_appli(uint8_t type, String var, char *valeur)
   int paramV = var.toInt();
   // valeur limité a 50 caractères
   
-  if (paramV == 60)  // registre 60 : adresse MAC ce module
-  {
-    res = 0;
-    strncpy(valeur, WiFi.macAddress().c_str(), 18);
-  }
-  if (paramV == 61)  // registre 61 : adresse MAC Gateway
-  {
-    res = 0;
-    snprintf(valeur, 18,
-           "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac_gw[0], mac_gw[1], mac_gw[2],
-           mac_gw[3], mac_gw[4], mac_gw[5]);
-  }
 
   return res;
 }
@@ -760,7 +750,7 @@ uint8_t lecture_Text(float *mesure) {
       float Rntc = 15000 * Vmesure / (3.3 - Vmesure);  // Calcul de la résistance de la thermistance
       float T_kelvin = 1.0 / ((1.0 / 298.15) + (1.0 / TBeta) * log(Rntc / Therm0));    // Calcul de la température en Kelvin
       valeur = T_kelvin - 273.15;    // Conversion en °C */
-    //Serial.printf("val_text:%i vmesure:%.3f rntc:%.0f T_kelvin:%.1f valeur:%.1f\n", Val_Text, Vmesure, Rntc, T_kelvin, valeur);
+    //Serial.printf("val_text:%i vmesure:%.3f rntc:%.0f T_kelvin:%.1f valeur:%.1f\n\r", Val_Text, Vmesure, Rntc, T_kelvin, valeur);
   #endif
 
   if ((valeur < -30.0) || (valeur > 60.0)) Text_erreur = 1;
@@ -810,7 +800,7 @@ uint8_t fetch_internet_temp() {
         {
           res = 0;
           Text = temp;
-          //Serial.printf("Météo Garches : %.1f°C\n", Text);
+          //Serial.printf("Météo Garches : %.1f°C\n\r", Text);
           uint32_t mil = millis();
           if (mil - last_remote_Text_time > 35*60*1000) // le precedent message est vieux de plus de 35 minutes
             err_Text++;
@@ -819,10 +809,10 @@ uint8_t fetch_internet_temp() {
           tempE_moy24h += Text;
         }
       } else {
-        Serial.printf("Erreur parsing JSON Météo : %s\n", error.c_str());
+        Serial.printf("Erreur parsing JSON Météo : %s\n\r", error.c_str());
       }
     } else {
-      Serial.printf("Erreur HTTP Météo (%d) : %s\n", httpCode, http.errorToString(httpCode).c_str());
+      Serial.printf("Erreur HTTP Météo (%d) : %s\n\r", httpCode, http.errorToString(httpCode).c_str());
     }
     http.end();
   }
@@ -833,7 +823,7 @@ uint8_t enreg_valeur()
 {
   unsigned long currentMillis = millis();  // en minutes
 
-  //Serial.printf("Envoi AAA cpt_nb_val:%d\n", cpt_nb_val);
+  //Serial.printf("Envoi AAA cpt_nb_val:%d\n\r", cpt_nb_val);
   if (!esp_now_actif) return 0;
 
   if (cpt_nb_val >= NB_VAL_TAB) cpt_nb_val = 0;
@@ -852,13 +842,15 @@ uint8_t enreg_valeur()
 
   if (envoi)
   {
-    //Serial.printf("Envoi BBB %d valeurs Temp-HR-Ecart\n", cpt_nb_val);
+    //Serial.printf("Envoi BBB %d valeurs Temp-HR-Ecart\n\r", cpt_nb_val);
     Message_EspNow message;
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
     message.emetteur = ADDRESS;
     message.code = 'C';
     message.code2 = 'T';
+    num_sequentiel++;
+    message.num_seq = num_sequentiel;
 
     message.payload[0] = cpt_nb_val;
     
@@ -867,22 +859,22 @@ uint8_t enreg_valeur()
     {
       payloadWrite(message.payload, pos, valTemp[cpt]);  
       payloadWrite(message.payload, pos, valHum[cpt]);
-      payloadWrite(message.payload, pos, valEcart[cpt]);
+      message.payload[pos++] = (uint8_t) valEcart[cpt];  // 1 octet suffisant pour l'écart en minutes
     }
     // Taille réelle du message envoyé
-    message.longueur = 5 + pos - 3;
+    message.longueur = 3 + pos;
 
     uint8_t result = envoi_data_gateway(message);
 
 
     if (result == ESP_OK) {
-        if (log_detail>=3) Serial.printf("✅ %d valeurs Temp-HR-Ecart envoyées\n",  message.payload[0]);
+        if (log_detail>=3) Serial.printf("✅ %d valeurs Temp-HR-Ecart envoyées\n\r",  message.payload[0]);
         for (uint8_t cpt = 0; cpt < message.payload[0]; cpt++)
         {
-          if (log_detail>=3) Serial.printf("   %.2f°C %.2f%% %d min\n", valTemp[cpt]/100.0-40, valHum[cpt]/100.0, valEcart[cpt]);
+          if (log_detail>=3) Serial.printf("   %.2f°C %.2f%% %d min\n\r", valTemp[cpt]/100.0-40, valHum[cpt]/100.0, valEcart[cpt]);
         }
     } else {
-        Serial.printf("❌ Erreur envoi ESP-NOW : %d\n", result);
+        Serial.printf("❌ Erreur envoi ESP-NOW : %d\n\r", result);
         activation_writelog();
         writeLog('E', 8, valTemp[0]/10,  valHum[0]/10, "Esp_now");
 
@@ -905,14 +897,15 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA)
   message.emetteur = ADDRESS;
   message.code = 'C';
   message.code2 = 'I';
+  num_sequentiel++;
+  message.num_seq = num_sequentiel;
 
   uint8_t pos = 0;
   payloadWrite(message.payload, pos, (uint16_t)(Tint * 100));
   payloadWrite(message.payload, pos, (uint16_t)(Humid * 100));
-  payloadWrite(message.payload, pos, (uint16_t)(HA * 100));
 
   // Taille réelle du message envoyé
-  message.longueur = 8;
+  message.longueur = 3+4;
 
   uint8_t result = envoi_data_gateway(message);
   return result;
@@ -921,7 +914,7 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA)
 void envoi_temp_hygro()
 {
   lecture_Tint(&Tint, &Humid);
-  if (log_detail>=2) Serial.printf("milli H2: %lu\n", millis());
+  if (log_detail>=2) Serial.printf("milli H2: %lu\n\r", millis());
 
   float HA = absoluteHumidity(Tint, Humid);
   if (log_detail>=2) Serial.printf("Temp int:%.2f Humid:%.2f HA:%.2f\n\r", Tint, Humid, HA); 
@@ -1009,7 +1002,7 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
         cpt_mesure++;
         if (cpt_mesure >= freq_envoi)  // mesure toutes les x valeurs (x*skip_graph*15 minutes)
         {
-          if (log_detail>=3) Serial.printf("Mesure périodique toutes les %i valeurs (cpt_mesure=%i)\n", freq_envoi, cpt_mesure);
+          if (log_detail>=3) Serial.printf("Mesure periodique toutes les %i valeurs (cpt_mesure=%i)\n\r", freq_envoi, cpt_mesure);
           cpt_mesure=0;
           enreg_valeur();  // enreg puis envoi  par ESP-NOW
           Mesure_min_prec = currentMillis;
@@ -1023,7 +1016,7 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
         if (TintPrec - Tint > Capt_seuil_temp) enreg=1;
         if ((currentMillis - Mesure_min_prec)/60000 > Capt_tps_max) enreg=1;
         if (enreg) {
-          Serial.printf("Envoi : %i minutes (cpt_nb_val=%i)\n", Capt_tps_max, cpt_nb_val);
+          Serial.printf("Envoi : %i minutes (cpt_nb_val=%i)\n\r", Capt_tps_max, cpt_nb_val);
           enreg_valeur();  // enreg puis envoi  par ESP-NOW
           TintPrec = Tint;
           Mesure_min_prec = currentMillis;
@@ -1088,62 +1081,58 @@ float readBatteryVoltage() {
   return voltage;
 }
 
-#ifdef ESP_TJ_ACTIF
-// Callback reception ESP-NOW
-void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-//void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 //void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len) {
   // 🔍 DIAGNOSTIC: Afficher infos de réception
-  Serial.println("\n📥 ========== RECEPTION ESP-NOW ==========");
-  for (int i = 0; i < 6; i++) {
-        Serial.printf("%02X", mac[i]);
-        if (i < 5) Serial.print(":");
+  if (log_detail>=3) 
+  {
+    Serial.println("\n📥 ========== RECEPTION ESP-NOW ==========");
+    for (int i = 0; i < 6; i++) {
+      Serial.printf("%02X", info->src_addr[i]);
+      if (i < 5) Serial.print(":");
     }
-  /*Serial.printf("   Source MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                info->src_addr[0], info->src_addr[1], info->src_addr[2],
-                info->src_addr[3], info->src_addr[4], info->src_addr[5]);*/
+    Serial.println();
+  }
   
   // Afficher le canal WiFi actuel
   uint8_t current_channel;
   wifi_second_chan_t second;
   esp_wifi_get_channel(&current_channel, &second);
-  Serial.printf("   Canal WiFi actuel: %d\n", current_channel);
-  Serial.printf("   Taille reçue: %d octets\n", len);
+  if (log_detail>=3) Serial.printf("   Canal WiFi actuel: %d\n\r", current_channel);
+  if (log_detail>=3)Serial.printf("   Taille reçue: %d octets\n\r", len);
   
-  Message_EspNow receivedMessage;
-  memcpy(&receivedMessage, incomingData, sizeof(receivedMessage));
+  if (len > sizeof(Message_EspNow)) {
+    Serial.println("⚠️ message trop long");
+    return;
+  }
+  Message_EspNow msg;
+  memcpy(&msg, data, sizeof(msg));
+  uint8_t renvoi_ack=0;
 
-  Serial.print("   Type: "); Serial.print(receivedMessage.type);
-  Serial.print(" | Valeur: "); Serial.println(receivedMessage.valuef);
-  Serial.println("=========================================\n");
-
-  if (receivedMessage.type == 1) { // Temperature
-    float Trecue = receivedMessage.valuef;
-    if ((Trecue > -10.0) && (Trecue < 49.99f)) 
+  for (uint8_t i = 0; i < len; i++) {
+    if (log_detail>=2) Serial.printf("%02X ", data[i]);
+  }
+  if ((msg.destinataire & 0x7F) == ADDRESS)
+  {
+    if (log_detail>=3) Serial.printf("Message destiné a ce node du node:%c\n\r", msg.emetteur);
+    if ((msg.emetteur & 0x7F) == SERVER_ADD)
     {
-      Tint = Trecue;
-      if ((Trecue < 24.99) || (Trecue > 25.01))
+      if (msg.code == 'A')
       {
-        unsigned long mil = millis();
-        if (mil - last_remote_Tint_time > 25*60*1000) // le precedent message est vieux de plus de 25 minutes
-          err_Tint++;
-        last_remote_Tint_time = mil;
-        cpt24_Tint++;
-        tempI_moy24h += Tint;
+        if (log_detail>=3) Serial.println("Ack recu");
+        if (num_sequentiel == msg.num_seq)
+        {
+          if (log_detail>=3) Serial.println("Numéro de séquence Ackcorrect");
+          ackReceived = true;
+        }
+        else
+        {
+          Serial.println("Numéro d'Ack incorrect");
+        }
       }
     }
-    Serial.printf("✅ Tint mise à jour: %.2f°C\n", Tint);
-  }
-  else if (receivedMessage.type == 2) { // Batterie
-    Vbatt_ESP = receivedMessage.valuef;
-    Serial.printf("✅ Vbatt_Th mise à jour: %.2fV\n", Vbatt_ESP);
-  }
-  else {
-    Serial.printf("⚠️ Type de message inconnu: %d\n", receivedMessage.type);
   }
 }
-#endif
-
 
 // envoie data à la gateway par ESP_now
 uint8_t envoi_data_gateway(Message_EspNow mess_esp)
@@ -1151,9 +1140,10 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
 
   if ((mac_gw[0] || mac_gw[3] || mac_gw[4]) && (esp_now_actif==1))
   {
-    // Initialisation WiFi en mode Station (nécessaire pour ESP-NOW)
 
- // Ne change le mode que si nécessaire
+  // Initialisation WiFi en mode Station (nécessaire pour ESP-NOW)
+
+  // Ne change le mode que si nécessaire
     if (WiFi.getMode() != WIFI_STA &&  WiFi.getMode() != WIFI_AP_STA)
     {
         WiFi.mode(WIFI_STA);
@@ -1167,8 +1157,16 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
     }
 
     esp_now_register_send_cb(OnDataSent);
+    esp_now_register_recv_cb(OnDataRecv);
+    
+    /* Vérifier le canal après init
+    esp_wifi_get_channel(&current_channel, &second);
+    
+    Serial.println("\n\n======================================");
+    Serial.println("🔵 ESP-NOW Initialisé (RÉCEPTEUR)");
+    Serial.print("   MAC Address module: ");*/
 
-    // Préparation du Peer (Chaudière)
+    // Préparation du Peer (Gateway)
     esp_now_peer_info_t peerInfo;
     memset(&peerInfo, 0, sizeof(peerInfo)); // Initialisation complète à zéro
     memcpy(peerInfo.peer_addr, mac_gw, 6);
@@ -1179,7 +1177,7 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
     // 🚀 OPTION 1 : Forcer le canal connu (plus rapide et économe en énergie)
     // Si vous connaissez le canal de votre routeur, décommentez ces lignes :
     /*
-    Serial.printf("🎯 Forçage canal %d (défini dans variables.h)\n", WIFI_CHANNEL);
+    Serial.printf("🎯 Forçage canal %d (défini dans variables.h)\n\r", WIFI_CHANNEL);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(false);
@@ -1188,7 +1186,7 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
 
     // 🔍 OPTION 2 : Scan robuste des canaux (si le canal n'est pas connu ou change)
 
-    if (log_detail>=2) Serial.printf("🔍 Scan de 13 canaux (priorité: canal %d)\n", last_wifi_channel);
+    if (log_detail>=2) Serial.printf("🔍 Scan de 13 canaux (priorité: canal %d)\n\r", last_wifi_channel);
     uint8_t deliverySuccess = false;
     uint8_t current_channel;
     if (!last_wifi_channel || last_wifi_channel>13) last_wifi_channel=1;  // si corrompu : channel 1
@@ -1250,7 +1248,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
   uint8_t result = false;
 
   // Fixer le canal
-  if (log_detail>=2) Serial.printf("\n--- Essai canal %d ---\n", channel);
+  if (log_detail>=2) Serial.printf("\n--- Essai canal %d ---\n\r", channel);
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
@@ -1262,13 +1260,13 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
   
   if (actual_channel != channel)
   {
-    Serial.printf("⚠️ Échec changement canal (demandé:%d, actuel:%d)\n", channel, actual_channel);
+    Serial.printf("⚠️ Échec changement canal (demandé:%d, actuel:%d)\n\r", channel, actual_channel);
     delay(100); // Attendre un peu plus
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_get_channel(&actual_channel, &second);
-    Serial.printf("   2ème tentative: canal actuel=%d\n", actual_channel);
+    Serial.printf("   2ème tentative: canal actuel=%d\n\r", actual_channel);
   } else {
-    //Serial.printf("✅ Canal changé: %d\n", actual_channel);
+    //Serial.printf("✅ Canal changé: %d\n\r", actual_channel);
   }
   
   delay(50); // Délai pour stabilisation du canal
@@ -1286,7 +1284,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
   // Envoi Message
   
   // 🔍 DIAGNOSTIC: Afficher les infos avant envoi
-  /*Serial.printf("📤 Tentative envoi sur canal %d vers MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+  /*Serial.printf("📤 Tentative envoi sur canal %d vers MAC: %02X:%02X:%02X:%02X:%02X:%02X\n\r",
                 actual_channel,
                 mac_gw[0], mac_gw[1], mac_gw[2],
                 mac_gw[3], mac_gw[4], mac_gw[5]);*/
@@ -1305,19 +1303,19 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
 
   if (resulta == ESP_OK)
   {
-    //Serial.printf("Envoye sur canal %d\n", actual_channel);
+    //Serial.printf("Envoye sur canal %d\n\r", actual_channel);
 
     // attendre la réponse max 100 ms
     int wait = 0;
-    while (!ackReceived && wait < 10) { // 10 * 10ms = 100ms
-        delay(10);
+    while (!ackReceived && wait < 60) { // 60 * 3ms = 180ms
+        delay(3);
         wait++;
     }
 
     if (ackReceived) // canal trouvé
     {
       result = true; 
-      if (log_detail>=2) Serial.println("✅ Ack Recu");
+      if (log_detail>=2) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 3);
       if (last_wifi_channel != actual_channel)
       {
         last_wifi_channel = actual_channel;

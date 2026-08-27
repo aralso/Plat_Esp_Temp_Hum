@@ -45,7 +45,7 @@ Param PARAMS[] = {
   {"ipDNS", 53, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, primaryDNS, 4},        // 8.8.8.8
   {"ipDNS2", 54, IP, 0, 0xFFFFFFFFu, 8, 0, nullptr, secondaryDNS, 4},     // 8.8.4.4
   {"Rout", 55, STR, 0, 0, 0, 0,  "garches", nom_routeur, 16},             // nom routeur  
-  {"Mdp", 56, STR, 0, 0, 0, 0, "196492380", mdp_routeur, 16},                
+  {"Mdp", 56, STR, 0, 0, 0, 0, "196492380", mdp_routeur, 25},                
   {"WSOn", 57, U8, 0, 2, 1, 0, nullptr, &websocket_on, 0},                 // 0 ou 1
   {"WSock", 58, STR, 0, 0, 0, 0, "websocket", ip_websocket, 40},          // ws://webcam.hd.free.fr:8081
   {"WSId", 59, U8, 0, 9, 9, 0,nullptr, &id_websocket, 0},                 // 1, 2, 3

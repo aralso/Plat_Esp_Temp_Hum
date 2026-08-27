@@ -90,6 +90,7 @@ typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets
     uint8_t longueur;
     uint8_t code;
     uint8_t code2;
+    uint8_t num_seq;
     uint8_t payload[MAX_PAYLOAD];
 } Message_EspNow;
 
@@ -313,7 +314,7 @@ void passage_deep_sleep(uint64_t temps);
 
 extern float Vbatt_ESP;   // Tension batterie ESP
 extern struct tm timeinfo;
-extern const int BTN_PIN[];  // Pins des boutons
+extern int BTN_PIN[];  // Pins des boutons
 extern uint8_t mac_gw[6];
 
 typedef enum {
