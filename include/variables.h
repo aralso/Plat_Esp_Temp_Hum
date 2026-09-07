@@ -94,6 +94,8 @@ typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets
     uint8_t payload[MAX_PAYLOAD];
 } Message_EspNow;
 
+uint8_t envoi_data_gateway(Message_EspNow mess_esp);
+
 // structure des paramètres 
 typedef enum ParamType {
   U8,
@@ -136,7 +138,7 @@ extern uint8_t freq_envoi;
 extern uint8_t boot_rapide;
 extern char latitude[];
 extern char longitude[];
-extern  uint8_t last_wifi_channel;
+extern  uint8_t last_wifi_channel;  // Mémorisation du canal Wifi en DeepSleep
 extern uint8_t WIFI_CHANNEL;
 extern uint8_t local_ip[4];
 extern uint8_t gateway[4];
@@ -324,8 +326,11 @@ typedef enum {
   EVENT_SENSOR,
   EVENT_GPIO_ON,
   EVENT_GPIO_OFF,
+  EVENT_ESP_RECV,
+  EVENT_ESP_RECALAGE,
   EVENT_ERREUR,
   EVENT_ECOUTE_WebSock,
+  EVENT_GATEWAY_QUEUE,
   EVENT_WATCHDOG,
   EVENT_24H,
   EVENT_3min,
@@ -339,6 +344,12 @@ typedef struct {
   uint32_t data;            // Donnée associée (ex: valeur capteur, byte UART)
 } systeme_eve_t;
 
+// Structure pour la queue de réception ESP-NOW (message + adresse source)
+typedef struct {
+  uint8_t src_addr[6];
+  Message_EspNow msg;
+  int len;
+} EspNowRecvMsg_t;
 
 /* Codes erreur*/
 #define Code_erreur_Tint 1
@@ -379,8 +390,6 @@ extern  uint16_t Nb_PI[];
 extern float Tint, Text, Humid;
 
 extern uint8_t cpt_securite;
-extern uint8_t WIFI_CHANNEL;
-extern  uint8_t last_wifi_channel;     // Mémorisation du canal Wifi en DeepSleep
 extern uint8_t rtc_valid;  // 0:cold reset  1:reset apres deep sleep
 extern  uint16_t cpt_cycle_batt;                   // Compteur cycles pour mesure batterie
 extern volatile uint8_t ackReceived;  // global pour indiquer que le peer a acké
@@ -407,7 +416,6 @@ extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil 
 
 
 extern  uint8_t etat_now;
-extern  uint8_t Nb_jours_Batt_log;
 
 extern  bool force_stay_awake;
 extern unsigned long wake_up_time;  // Temps de réveil/dernière activité
@@ -419,10 +427,6 @@ uint16_t crc16_arc(const uint8_t* data, size_t length);
 void log_erreur(uint8_t code, uint8_t valeur,
                 uint8_t val2);  // Code:1:Tint, 2:Text, 3:TPac;
 void init_10_secondes();
-void setup_0();
-void setup_nvs();
-void setup_1();
-void setup_2();
 uint8_t requete_action_appli(const char* reg, const char* data);
 void appli_event_on(systeme_eve_t evt);
 void appli_event_off(systeme_eve_t evt);
@@ -432,13 +436,13 @@ uint8_t requete_GetReg_appli(int reg, float* valeur);
 uint8_t requete_SetReg_appli(int param, float valeurf);
 uint8_t requete_Get_String_appli(uint8_t type, String var, char* valeur);
 uint8_t requete_Set_String_appli(int param, const char* texte);
+uint8_t requete_SetReg(int param, float valeurf, uint8_t secu);
 uint8_t lecture_Tint(float* mesure, float *hum );
 uint8_t lecture_Text(float* mesure);
 void event_cycle();
 void envoi_detection();
 
 // Fonctions WiFi
-uint8_t connectWiFiWithDiagnostic();
 void diagnoseWiFiError();
 void protectUARTDuringWiFi();
 

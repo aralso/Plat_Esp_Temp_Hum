@@ -7,8 +7,8 @@ Param PARAMS[] = {
   {"nb_reset", 3, U16, 0, 65535, 0, 0, nullptr, &nb_reset, 0},
 
   // cycle and network-related registers mapped to SetReg order numbers
-  {"Rap", 5, U8, 0, 255, 0, 0, nullptr, &mode_rapide, 0},           // registre 5 : cycle rapide
-  {"cycle", 6, U8, 10, 120, 15, 0, nullptr, &periode_cycle, 0},    // registre 4 : période du cycle (min)
+  {"Rap", 5, U8, 0, 12, 0, 0, nullptr, &mode_rapide, 0},           // registre 5 : cycle rapide 0 ou 12
+  {"cycle", 6, U8, 1, 120, 15, 0, nullptr, &periode_cycle, 0},    // registre 4 : période du cycle (min)
   {"DelWS", 7, U8,  1, 30, 1, 0, nullptr, &DelaiWebsocket, 0},      // registre 6 : délai écoute websocket (s)
   {"Skip", 8, U8, 1, 50, 2,0, nullptr, &skip_graph, 0},             // registre 7 : skip graph
 
@@ -17,7 +17,7 @@ Param PARAMS[] = {
   {"FrBL", 10, U8, 1, 15, 7, 0, nullptr, &Nb_jours_Batt_log, 0},         // registre 10 : nb jours log batterie
   // 11:reglage date, 12:reglage heure, 13:reglage OTA
   {"Allu", 15, U8, 0, 1, 0, 0, nullptr, &pas_de_veille, 0},   // 0:veille 1:pas de mise en veille
-  {"PVei", 16, U16, 15, 600, 30, 0, nullptr, &prolong_veille, 0}, 
+  {"PVei", 16, U16, 15, 600, 30, 0, nullptr, &prolong_veille, 0},  // delai avant mise en veille (s)
           // registre 16 : duree allumage (s)
 
   // Application settings
@@ -34,8 +34,8 @@ Param PARAMS[] = {
 
   // WiFi channel (SetReg_appli uses 41/42)
   {"Esp", 40, U8, 0, 1, 1, 0, nullptr, &esp_now_actif, 0},         // registre 40 : activation esp_now
-  {"lWc", 41, U8, 0, 13, 0, 0, nullptr, &last_wifi_channel, 0},         // registre 41 : last_wifi_channel (not persisted)
-  {"WifiC", 42, U8, 1, 13, 1, 0, nullptr, &WIFI_CHANNEL, 0},         // registre 42 : canal wifi preferentiel (persisted)
+  {"lWc", 41, U8, 0, 13, 0, 0, nullptr, &last_wifi_channel, 0},         // registre 41 : last_wifi_channel  (not persisted)
+  {"WifiC", 42, U8, 1, 13, 1, 0, nullptr, &WIFI_CHANNEL, 0},         // registre 42 : last wifi channel valide (persisted)
   // 43:puissance wifi, 44:mode wifi
   
   // IPv4 addresses stored as four bytes

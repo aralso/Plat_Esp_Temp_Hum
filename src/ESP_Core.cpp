@@ -124,11 +124,31 @@ uint8_t sdcard_ok;
 
 uint8_t init_masquage=1;
 
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
+#else
+void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
+#endif
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+
 uint8_t envoi_data_gateway(Message_EspNow mess_esp);
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow *message);
+uint8_t traitement_queue_data_gateway();
+void vTimerGatewayQueueCallback(TimerHandle_t xTimer);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
+void traitement_espnow_recv(EspNowRecvMsg_t &recv);
+void setup_0();
+void setup_nvs();
+void setup_1();
+void setup_2();
+void setup_3();
+void setupRoutes_appli();
+uint8_t connectWiFiWithDiagnostic();
+void traitement_recalage_espnow(uint8_t node);
 
 // variable globale de 4000c en RAM pour dump log et autres requetes
 char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
+volatile uint8_t ackExpectedSequence = 0;
 
 
 #ifdef MODE_Wifi
@@ -254,9 +274,35 @@ RTC_NOINIT_ATTR uint8_t periode_cycle;
 QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
 QueueHandle_t QueueUart;   // file d'attente pour message uart en réception
 QueueHandle_t QueueUart1;   // file d'attente pour message uart en réception
+QueueHandle_t QueueEspNow;  // file d'attente pour messages ESP-NOW reçus
+QueueHandle_t QueueDataGateway;  // file d'attente des messages ESP-NOW à envoyer
+
+#define GATEWAY_QUEUE_CAPACITY_BYTES 5000
+#define GATEWAY_QUEUE_LENGTH 334
+static SemaphoreHandle_t gatewayQueueMutex = NULL;
+static SemaphoreHandle_t gatewayProcessMutex = NULL;
+static size_t gatewayQueueBytes = 0;
+static portMUX_TYPE gatewayInitMux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool ensure_gateway_queue()
+{
+  portENTER_CRITICAL(&gatewayInitMux);
+  if (QueueDataGateway == NULL)
+    QueueDataGateway = xQueueCreate(GATEWAY_QUEUE_LENGTH, sizeof(uint8_t *));
+  if (gatewayQueueMutex == NULL)
+    gatewayQueueMutex = xSemaphoreCreateMutex();
+  if (gatewayProcessMutex == NULL)
+    gatewayProcessMutex = xSemaphoreCreateMutex();
+  const bool initialized = QueueDataGateway != NULL &&
+                           gatewayQueueMutex != NULL &&
+                           gatewayProcessMutex != NULL;
+  portEXIT_CRITICAL(&gatewayInitMux);
+  return initialized;
+}
 
 //timers
 esp_timer_handle_t timer;
+TimerHandle_t gatewayQueueTimer = NULL;
 
 //taches
 TaskHandle_t taskHandle = NULL;
@@ -423,7 +469,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type);
 uint8_t requete_Set(uint8_t type, const char* param, const char* valStr);
 uint8_t requete_Get(uint8_t type, const char* var, float *valeur);
 uint8_t requete_Get_String (uint8_t type, String var, char *valeur);
-uint8_t requete_SetReg(int param, float valeurf);
+uint8_t requete_SetReg(int param, float valeurf, uint8_t secu);
 uint8_t requete_SetRegM(uint8_t param, int valeur);
 uint8_t requete_Set_String(int param, const char *texte);
 uint8_t requete_Set_Action(const char *reg, const char *data);
@@ -582,6 +628,18 @@ void vTimerWatchdogCallback(TimerHandle_t xTimer)
     {
       if (erreur_queue<5) num_err_queue[erreur_queue]=5;
       erreur_queue++;
+    }
+}
+
+void vTimerGatewayQueueCallback(TimerHandle_t xTimer)
+{
+    {
+      systeme_eve_t evt = { EVENT_GATEWAY_QUEUE, 0 };
+      if (xQueueSend(eventQueue, &evt, 0) != pdTRUE)
+      {
+        if (erreur_queue < 5) num_err_queue[erreur_queue] = 12;
+        erreur_queue++;
+      }
     }
 }
 
@@ -758,7 +816,7 @@ void taskHandler(void *parameter) {
                       xTimerStop(xTimer_Init,100); // arret
                     else
                     {
-                      Serial.println("verification de l'heure");
+                      if (log_detail>=3) Serial.println("verification de l'heure");
                       // Serial.flush();
                       init_time_ps();
                       if (init_time>=3)  xTimerStop(xTimer_Init,100); // arret
@@ -808,6 +866,22 @@ void taskHandler(void *parameter) {
                   break;
                 }
  
+                case EVENT_ESP_RECV: {
+                  EspNowRecvMsg_t espRecv;
+                  while (xQueueReceive(QueueEspNow, &espRecv, 0) == pdTRUE) {
+                    traitement_espnow_recv(espRecv);
+                  }
+                  break;
+                }
+
+                case EVENT_ESP_RECALAGE:
+                  traitement_recalage_espnow((uint8_t)evt.data);
+                  break;
+
+                case EVENT_GATEWAY_QUEUE:
+                  traitement_queue_data_gateway();
+                  break;
+
                 case EVENT_GPIO_OFF:  
                     Serial.printf("GPIO:off:%i\n\r", evt.data);
                     appli_event_off(evt);
@@ -1261,6 +1335,7 @@ void setup()
 
   uint32_t t = millis();
   if (boot_rapide < 2) delay(3000);
+  //if (!boot_rapide) delay(10000);
 
 
   // Cause reset :
@@ -1378,7 +1453,7 @@ void setup()
 
     esp_log_set_vprintf(&myLogPrinter);  // redirige les log vers ma fonction
 
-    printMemoryStatus();
+    if (log_detail>=3) printMemoryStatus();
 
     checkPartitions();
   #endif
@@ -1446,6 +1521,20 @@ void setup()
     // création de la queue de reception des message uart
     QueueUart = xQueueCreate(20, sizeof(UartMessage_t));
 
+    // création de la queue de reception des messages ESP-NOW
+    QueueEspNow = xQueueCreate(4, sizeof(EspNowRecvMsg_t));
+
+    // Queue d'envoi ESP-NOW : les blocs alloués ont exactement leur taille utile
+    if (!ensure_gateway_queue())
+      Serial.println("Erreur : queue d'envoi ESP-NOW non créée !");
+    gatewayQueueTimer = xTimerCreate("GatewayQueue",
+                                     pdMS_TO_TICKS(500),
+                                     pdFALSE,
+                                     NULL,
+                                     vTimerGatewayQueueCallback);
+    if (gatewayQueueTimer == NULL)
+      Serial.println("Erreur : timer gatewayQueueTimer non créé !");
+
     // Création de la tâche FreeRTOS
     //xTaskCreatePinnedToCore (taskHandler, "TaskHandler", 4096, NULL, 1, &taskHandle,0);
     xTaskCreate (taskHandler, "TaskHandler", 8192, NULL, 1, &taskHandle);
@@ -1505,17 +1594,19 @@ void setup()
     // lecture de tous les paramètres nvs uint8_t, uint16_t, uint32_t(IP) et string
     for (size_t i = 0; i < PARAMS_COUNT; ++i) {
       nvs_read(PARAMS[i]);
-      if (i==1)  // log_detail
+      if (PARAMS[i].order==1)  // log_detail
       {
           apply_log_detail(log_detail);
           Serial.printf("log_detail:%i\n\r", log_detail);
       }
-      if (i==61) // adresse Mac Gateway
+      if (PARAMS[i].order==61) // adresse Mac Gateway
       {
         if (!parseMacString(mac_gw_str, mac_gw))
         {
-            Serial.println("MAC Serveur invalide");
+          Serial.println("MAC Serveur invalide");
         }
+        else 
+          if (log_detail>=3) Serial.printf("MAC Serveur valide : %X:%X:%X:%X:%X:%X\n\r", mac_gw[0], mac_gw[1], mac_gw[2], mac_gw[3], mac_gw[4], mac_gw[5]);
 
       }
     }
@@ -1576,11 +1667,11 @@ void setup()
 
   setup_1();  // --------------   initialisation sonde temperature--10ms----------
 
-   if (log_detail>=3) Serial.printf("milli G: %lu\n\r", millis());
+   if (log_detail>=4) Serial.printf("milli G: %lu\n\r", millis());
 
    setup_appli();
 
-   if (log_detail>=3) Serial.printf("milli G2: %lu\n\r", millis());
+   if (log_detail>=4) Serial.printf("milli G2: %lu\n\r", millis());
 
   // -------------- partition "log_flash" custom  pour Write-log -------------------
 
@@ -1756,7 +1847,7 @@ void setup()
         }
         else Serial.println("Wifi pas ok");
       }
-      if (log_detail>=2) Serial.printf("milli J2: %lu\n\r", millis());
+      if (log_detail>=4) Serial.printf("milli J2: %lu\n\r", millis());
 
       // Protection UART après connexion WiFi
       //protectUARTDuringWiFi();
@@ -1800,7 +1891,8 @@ void setup()
 
   #endif // No_reseau
 
-  printMemoryStatus();
+  if (log_detail>=3) printMemoryStatus();
+
   if (boot_rapide < 1) delay(100);
 
 
@@ -1819,7 +1911,7 @@ void setup()
   #endif
 
 
-  printMemoryStatus();
+  if (log_detail>=4) printMemoryStatus();
 
   setup_2();  // Esp_now  et read LogG(99)
 
@@ -1880,12 +1972,38 @@ void setup()
 
   //WiFi.setSleep(true);
 
+  setup_3();
+
   Serial.printf("fin setup: %i ms\n\r", millis());
 
   #ifdef WATCHDOG
     esp_task_wdt_delete(NULL); // desinscription de la tache setup/loop de la surveillance watchdog : permet d'éviter le reset_wdt dans la tache loop
   #endif
 
+}
+
+uint8_t parseMacString(const char* str, uint8_t mac[6])
+{
+  if (str == nullptr || mac == nullptr) {
+    return false;
+  }
+
+  unsigned int v[6];
+
+  if (sscanf(str, "%x:%x:%x:%x:%x:%x",
+             &v[0], &v[1], &v[2],
+             &v[3], &v[4], &v[5]) != 6) {
+    return false;
+  }
+
+  for (int i = 0; i < 6; ++i) {
+    if (v[i] > 0xFF) {
+      return false;
+    }
+    mac[i] = static_cast<uint8_t>(v[i]);
+  }
+
+  return true;
 }
 
 void heartBeatPrint()
@@ -2207,7 +2325,7 @@ void onMessageCallback(WebsocketsMessage message) {
   }
 
   else if (!strncmp(action, "status",7)) {
-    printMemoryStatus();
+    if (log_detail>=4) printMemoryStatus();
     uint8_t type = doc["type"];
     if (type) type = 1; else type = 0;
 
@@ -2343,7 +2461,7 @@ uint8_t requete_Set(uint8_t type, const char* param, const char* valStr)
 
   if (type==2)  // set registre
   {
-    res = requete_SetReg(paramV, valf);
+    res = requete_SetReg(paramV, valf, cpt_securite);
   }
   if (type==3)  // set registre Modbus
   {
@@ -2356,6 +2474,7 @@ uint8_t requete_Set(uint8_t type, const char* param, const char* valStr)
   {
     res = requete_Set_Action(param, valStr);     
   }
+  // type 1 SET
   if (type==1)  // set variable
   {
     if (cpt_securite) {
@@ -3073,14 +3192,14 @@ uint8_t requete_GetReg(int reg, float *valeur) {
 }
 
 // type 2
-uint8_t requete_SetReg(int param, float valeurf)
+uint8_t requete_SetReg(int param, float valeurf, uint8_t secu)
 {
   int32_t valeur = int32_t(valeurf);
   uint8_t res = 1;
   uint8_t res2= 1;
 
 
-  if (cpt_securite)
+  if (secu)
   {
     // Keep special-case behavior for reset (param 3)
     if (param == 4)  // registre 4 : reset par watchdog
@@ -3369,27 +3488,32 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   // ajout des paramètres de l'application
   p = requete_status_appli(json_response, p, type);
 
-  // Tableaux : E(erreurs) T(temp)
-  if (!type)  // pas d'envoi des graphiques si type=1(maj)
-  {
-    // Nota: les 0 sont sautés
-    uint8_t i,j;  // 10 car par valeur => 1000 car par graphique
-    for (j = 0; j < NB_Graphique; j++) {
-      // valeurs de temperature
-      for (i = 0; i < NB_Val_Graph; i++) {
-        //printf("val %d : %u\n\r",i, temp_pisc_hist[i]);
-        if (graphique[i][j]) {
-          int remaining = MAX_DUMP - (p - json_response) -2;
-          int n = snprintf(p, remaining, "\"T%d%d\":%i,", j, i, graphique[i][j]);
-          if (n >= remaining || n < 0) {
-          // Plus assez de place dans le buffer ou erreur
-            break;
+  p += sprintf(p, "\"TintV\":%i,", TintV);  // Temp ext de la veille
+
+  #ifndef Graph_Specifique
+
+    // Tableaux : E(erreurs) T(temp)
+    if (!type)  // pas d'envoi des graphiques si type=1(maj)
+    {
+      // Nota: les 0 sont sautés
+      uint8_t i,j;  // 10 car par valeur => 1000 car par graphique
+      for (j = 0; j < NB_Graphique; j++) {
+        // valeurs de temperature
+        for (i = 0; i < NB_Val_Graph; i++) {
+          //printf("val %d : %u\n\r",i, temp_pisc_hist[i]);
+          if (graphique[i][j]) {
+            int remaining = MAX_DUMP - (p - json_response) -2;
+            int n = snprintf(p, remaining, "\"T%d%d\":%i,", j, i, graphique[i][j]);
+            if (n >= remaining || n < 0) {
+            // Plus assez de place dans le buffer ou erreur
+              break;
+            }
+            p+=n;
           }
-          p+=n;
         }
       }
     }
-  }
+  #endif
 
   // Tableaux : log erreurs
   uint8_t i;
@@ -3408,7 +3532,7 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
   uint32_t nb_car;
   nb_car = (uint32_t)p - (uint32_t)json_response;
   //nb_car = *p - nb_car;
-  Serial.printf("nb car status:%lu  max:%i\n\r", (uint32_t)nb_car, MAX_DUMP);
+  if (log_detail>=4)Serial.printf("nb car status:%lu  max:%i\n\r", (uint32_t)nb_car, MAX_DUMP);
   if ((nb_car) >= MAX_DUMP-2)  // erreur dépassement de tableau
   {
     uint8_t depass;
@@ -3424,7 +3548,6 @@ void requete_status(char *json_response, uint8_t socket, uint8_t type)
 
 void printMemoryStatus()
 {
-  #ifdef DEBUG
     size_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     size_t totalFree = esp_get_free_heap_size();
@@ -3436,7 +3559,6 @@ void printMemoryStatus()
               (unsigned int)totalFree);
     Serial.printf("Memoire interne:%d   contigu:%d  total:%d \n\r", internalFree, largestBlock, totalFree );
     delay(10);
-  #endif
 }
 
 void activation_writelog()
@@ -4201,8 +4323,8 @@ void init_time_ps()
   }
   else  // lecture correcte de l'heure : Nota : si l'heure/date est mise à jour manuellement, alors "ok init time"
   {
-    Serial.println("ok init time");
-    Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+    if (log_detail>=3) Serial.println("ok init time");
+    if (log_detail>=2) Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
     init_time = 3;
     //delay(2000 + random(1, 1001) );
     writeLog('S', 1, init_time, 0, "Ini-heur");
@@ -4642,6 +4764,8 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
         if (type==4) res2 = requete_Get_String(type, reg.c_str(), valeur_S);
 
       *p++ = '{';
+      p += snprintf(p, JSON_BUF_SIZE - (p - json_response) - 1,
+                    "\"res\":%d,", (res == 0 && res2 == 0) ? 0 : 1);
       size_t espace = JSON_BUF_SIZE - (p - json_response) -2;
       if (type==1)  p += snprintf(p, espace, "\"reg\":\"%s\",", reg.c_str());
       if (type==2)  p += sprintf(p, "\"reg\":\"get-reg-value\",");
@@ -4718,6 +4842,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", buffer_dmp);
   });
 
+  setupRoutes_appli();
 
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
@@ -5104,6 +5229,281 @@ uint16_t decod_asc16 (uint8_t * index)
 	return val;
 }
 
+static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
+{
+  if ((mac_gw[0] || mac_gw[3] || mac_gw[4]) && esp_now_actif == 1)
+  {
+    if (WiFi.getMode() != WIFI_STA && WiFi.getMode() != WIFI_AP_STA)
+    {
+      WiFi.mode(WIFI_STA);
+      if (log_detail >= 3) Serial.println("WiFi mode set to STA for ESP-NOW");
+    }
+
+    if (esp_now_init() != ESP_OK)
+    {
+      Serial.println("Error initializing ESP-NOW");
+      ESP.restart();
+    }
+
+    esp_now_register_send_cb(OnDataSent);
+    esp_now_register_recv_cb(OnDataRecv);
+
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    memcpy(peerInfo.peer_addr, mac_gw, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    peerInfo.ifidx = WIFI_IF_STA;
+
+    if (log_detail >= 2) Serial.printf("🔍 Esp_now canal %d)\n\r", last_wifi_channel);
+    uint8_t deliverySuccess = false;
+    uint8_t current_channel;
+    if (!last_wifi_channel || last_wifi_channel > 13) last_wifi_channel = 1;
+
+    if (etat_now == 0)
+    {
+      for (uint8_t k = 0; k < 13; k++)
+      {
+        current_channel = k + last_wifi_channel;
+        if (current_channel > 13) current_channel -= 13;
+        deliverySuccess = envoi_now(current_channel, &peerInfo, mess_esp);
+        if (deliverySuccess) break;
+      }
+      etat_now = deliverySuccess ? 2 : 1;
+    }
+    else if (etat_now == 2)
+    {
+      deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, mess_esp);
+      if (!deliverySuccess) etat_now = 4;
+    }
+    else if (etat_now == 1 || etat_now == 3)
+    {
+      deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, mess_esp);
+      if (deliverySuccess) etat_now = 2;
+      else
+      {
+        last_wifi_channel++;
+        if (last_wifi_channel > 13) last_wifi_channel = 1;
+      }
+    }
+    else if (etat_now == 4)
+    {
+      for (uint8_t k = 0; k < 14; k++)
+      {
+        current_channel = k + last_wifi_channel;
+        if (current_channel > 13) current_channel -= 13;
+        deliverySuccess = envoi_now(current_channel, &peerInfo, mess_esp);
+        if (deliverySuccess) break;
+      }
+      etat_now = deliverySuccess ? 2 : 3;
+    }
+    else etat_now = 0;
+
+    if (log_detail >= 3) Serial.printf("etat_now:%i\n\r", etat_now);
+    return 1 - deliverySuccess;
+  }
+
+  Serial.println("Adresse Mac gateway nulle");
+  return 2;
+}
+
+uint8_t traitement_queue_data_gateway()
+{
+  if (!ensure_gateway_queue() ||
+      xSemaphoreTake(gatewayProcessMutex, portMAX_DELAY) != pdTRUE)
+    return 1;
+
+  uint8_t result = 0;
+  uint8_t *message = NULL;
+  if (xQueuePeek(QueueDataGateway, &message, 0) == pdTRUE)
+  {
+    result = envoyer_data_gateway_direct(reinterpret_cast<Message_EspNow *>(message));
+    if (log_detail >= 3) Serial.printf("Traitement queue data gateway : result=%d, longueur=%d\n\r",
+                  result, reinterpret_cast<Message_EspNow *>(message)->longueur);
+    if (result == 0) // envoi réussi
+    {
+      if (xQueueReceive(QueueDataGateway, &message, 0) != pdTRUE)
+      {
+        Serial.printf("Erreur : impossible de retirer le message de la queue (result=%d)\n\r", result);
+      }
+      else
+      {
+        const size_t messageSize = reinterpret_cast<Message_EspNow *>(message)->longueur + 3;
+        if (log_detail >= 3) Serial.printf("longueur du message envoye : %zu\n\r", messageSize);
+        free(message);
+        if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
+        {
+          if (gatewayQueueBytes >= messageSize)
+            gatewayQueueBytes -= messageSize;
+          else
+            gatewayQueueBytes = 0;
+          xSemaphoreGive(gatewayQueueMutex);
+        }
+        if (xQueuePeek(QueueDataGateway, &message, 0) == pdTRUE)
+        {
+          if (log_detail >= 3) Serial.printf("Messages restants dans la queue : %u\n\r", static_cast<unsigned>(uxQueueMessagesWaiting(QueueDataGateway)));
+          // Start timer gatewayQueueTimer
+          xTimerStart(gatewayQueueTimer, 0);
+        }
+        else
+        {
+          if (log_detail >= 3) Serial.println("Aucun message restant dans la queue.");
+          if (log_detail >=4) printMemoryStatus();
+        }
+      }
+    }
+  }
+
+  xSemaphoreGive(gatewayProcessMutex);
+  return result;
+}
+
+uint8_t envoi_data_gateway(Message_EspNow mess_esp)
+{
+  if (!(mac_gw[0] || mac_gw[3] || mac_gw[4]) || esp_now_actif != 1)
+  {
+    Serial.println("Adresse Mac gateway nulle");
+    return 2;
+  }
+
+  if (!ensure_gateway_queue())
+    return 1;
+
+  const size_t messageSize = mess_esp.longueur + 3;
+  if (messageSize > sizeof(Message_EspNow))
+    return 2;
+
+  uint8_t *message = static_cast<uint8_t *>(malloc(messageSize));
+  if (message == NULL)
+    return 3;
+  memcpy(message, &mess_esp, messageSize);
+
+  if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) != pdTRUE)
+  {
+    free(message);
+    return 4;
+  }
+
+  const bool capacityAvailable =
+      gatewayQueueBytes + messageSize <= GATEWAY_QUEUE_CAPACITY_BYTES;
+  if (!capacityAvailable ||
+      xQueueSend(QueueDataGateway, &message, 0) != pdTRUE)
+  {
+    xSemaphoreGive(gatewayQueueMutex);
+    free(message);
+    return 5;
+  }
+  gatewayQueueBytes += messageSize;
+  xSemaphoreGive(gatewayQueueMutex);
+
+  // Un échec d'ack laisse le premier bloc en tête ; une nouvelle insertion
+  // déclenchera une nouvelle tentative.
+  if (log_detail>=3)
+  {
+    Serial.printf("Message ajouté a la queue (taille: %zu, bytes utilises: %zu, messages: %u, queue: %p)\n\r",
+                  messageSize,
+                  gatewayQueueBytes,
+                  static_cast<unsigned>(uxQueueMessagesWaiting(QueueDataGateway)),
+                  static_cast<void *>(QueueDataGateway));
+  }
+  return traitement_queue_data_gateway();
+}
+
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
+{
+  uint8_t result = false;
+  if (log_detail >= 2) Serial.printf("\n--- Essai canal %d ---\n\r", channel);
+  uint8_t actual_channel = 0;
+  wifi_second_chan_t second;
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    esp_err_t err = esp_wifi_set_promiscuous(true);
+    if (err == ESP_OK)
+    {
+      err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+      esp_err_t promiscuous_err = esp_wifi_set_promiscuous(false);
+      if (err == ESP_OK) err = promiscuous_err;
+    }
+
+    esp_err_t get_channel_err = esp_wifi_get_channel(&actual_channel, &second);
+    if (err != ESP_OK || get_channel_err != ESP_OK || actual_channel != channel)
+    {
+      Serial.printf("⚠️ Échec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
+                    channel, actual_channel,
+                    esp_err_to_name(err != ESP_OK ? err : get_channel_err));
+      return false;
+    }
+
+    delay(50);
+    peerInfo->channel = actual_channel;
+    Serial.printf("STA non connecté : channel actuel: %d\n\r", actual_channel);
+  }
+  else  // Wifi deja connecté, on ne peut pas changer de canal, on envoie sur le canal actuel
+  {
+    actual_channel = WiFi.channel();
+    peerInfo->channel = actual_channel;
+    Serial.printf("STA connecté : channel actuel: %d\n\r", actual_channel);
+  }
+
+  if (esp_now_is_peer_exist(mac_gw))
+  {
+    esp_err_t err = esp_now_del_peer(mac_gw);
+    if (err != ESP_OK)
+    {
+      Serial.printf("Erreur suppression peer: %s\n", esp_err_to_name(err));
+      return false;
+    }
+  }
+
+  {
+    esp_err_t err = esp_now_add_peer(peerInfo);
+    if (err != ESP_OK)
+    {
+      Serial.printf("Erreur ajout peer: %s\n", esp_err_to_name(err));
+      return false;
+    }
+  }
+
+  ackReceived = 0;
+  ackChannel = -1;
+  ackExpectedSequence = message->num_seq;
+  esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, message->longueur + 3);
+
+  if (log_detail >= 2)
+  {
+    for (int i = 0; i < message->longueur + 3; i++)
+      Serial.printf("%02X ", ((uint8_t*)message)[i]);
+      Serial.println();
+  }
+
+  if (resulta == ESP_OK)
+  {
+    int wait = 0;
+    while (!ackReceived && wait < 60)
+    {
+      delay(3);
+      wait++;
+    }
+
+    if (ackReceived)
+    {
+      result = true;
+      if (log_detail >= 2) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 3);
+      if (last_wifi_channel != actual_channel)
+      {
+        last_wifi_channel = actual_channel;
+        requete_SetReg(42, last_wifi_channel, 1);
+        WIFI_CHANNEL = last_wifi_channel;
+        Serial.printf("🔄 Mise à jour canal WiFi valide: %d\n\r", WIFI_CHANNEL);
+      }
+    }
+  }
+  else Serial.println("❌ Echec d'envoi");
+
+  return result;
+}
+
 //#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 //#if defined(ARDUINO_ARCH_ESP32) && defined(WIFI_TX_INFO_T)
@@ -5116,4 +5516,11 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status)
         ackReceived = true;
         ackChannel = WiFi.channel();  // canal courant
     }*/
+}
+
+float absoluteHumidity(float temperature, float relativeHumidity)
+{
+  return (1324.7f * relativeHumidity / 100.0f *
+          exp((17.67f * temperature) / (temperature + 243.5f))) /
+         (273.15f + temperature);
 }
