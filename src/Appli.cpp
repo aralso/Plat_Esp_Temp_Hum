@@ -72,6 +72,7 @@ RTC_NOINIT_ATTR uint8_t num_sequentiel;  // pour Ack
 extern uint16_t nb_err_reseau;
 extern  uint16_t TextV, TintV, HumV, HAV;  // pour stockage dans la partition log_flashG
 extern volatile uint8_t ackExpectedSequence;
+extern TimerHandle_t gatewayQueueTimer;
 
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
@@ -318,10 +319,17 @@ void setup_appli()
     if (log_detail>=2)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
     if ((type_reveil != 4) || (!etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
     {
-      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
-      if (mode_rapide==12)
-      sleep_time = (uint64_t)periode_cycle * 1000000;
-      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+      if (gatewayQueueTimer != NULL && xTimerIsTimerActive(gatewayQueueTimer) != pdFALSE)
+      {
+          if (log_detail>=3) Serial.println("Le timer Envoi_now tourne encore => pas de veille");
+      }
+      else  // 
+      {
+        uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+        if (mode_rapide==12)
+        sleep_time = (uint64_t)periode_cycle * 1000000;
+        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+      }
     }
   }
 
@@ -885,10 +893,10 @@ uint8_t enreg_valeur()
 
 
     if (result == ESP_OK) {
-        if (log_detail>=3) Serial.printf("✅ %d valeurs Tick-Temp-HR envoyées\n\r",  message.payload[0]);
+        if (log_detail>=1) Serial.printf("✅ %d valeurs Tick-Temp-HR envoyées\n\r",  message.payload[0]);
         for (uint8_t cpt = 0; cpt < message.payload[0]; cpt++)
         {
-          if (log_detail>=3) Serial.printf("Time: %d min   %.2f°C %.2f%%\n\r", valTick[cpt]/10, valTemp[cpt]/100.0-40, valHum[cpt]/100.0);
+          if (log_detail>=1) Serial.printf("Time: %d min   %.2f°C %.2f%%\n\r", valTick[cpt]/10, valTemp[cpt]/100.0-40, valHum[cpt]/100.0);
         }
         cpt_nb_val=0;
         envoi_6s_prec = Tick_6s;  // mettre à jour le temps du dernier envoi
@@ -1106,12 +1114,40 @@ float readBatteryVoltage() {
   return voltage;
 }
 
+// 1:Emission, ascii message, N° queue, Canal, Ack
+// 2: +
+// 3: +
+// 4: +
+/*3:Message ajoute au buffer RTC (taille: 14, octets utilises: 37, head: 30, tail: 67)                                                        
+4:WiFi mode set to STA for ESP-NOW                                            
+4:ðŸ” Esp_now canal 3)                                   
+3:--- Essai canal 3 ---                     
+1:STA non connectÃ© : channel actuel: 3
+1:C8 42 12 43 54 03 02 58 18 9D 14 00 00 0A 5A 18 9D 14 00 00 14                                   
+3: ðŸ“¥ ========== RECEPTION ESP-NOW ==========                
+3:14:C1:9F:28:A5:AC                                      
+4:   Canal WiFi actuel: 3                               
+2:   Taille recue: 6 octets                                    
+2:C2 48 03 41 00 03                             
+2:Message de gateway node:H                                              
+3:Ack recu                        
+1:Numero de sequence Ackcorrect                            
+3:âœ… Ack Recu en 57 ms                                                
+3:etat_now:2        
+3:Traitement buffer gateway : result=0, longueur=18
+2:Messages restants dans le buffer RTC : 1
+2:âœ… 1 valeurs Tick-Temp-HR envoyees         
+2:Time: 3 min   22.35Â°C 52.77%               
+2:Etat BTN0: 0  type_reveil:1
+2:Le timer Envoi_now tourne encore => pas de veille */
+
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 //void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len) {
   // 🔍 DIAGNOSTIC: Afficher infos de réception
   if (log_detail>=3) 
   {
-    Serial.println("\n📥 ========== RECEPTION ESP-NOW ==========");
+    Serial.println("\n📥 ========== RECEPTION ESP-NOW OnDataRecv=======");
+    Serial.printf("   Adresse MAC source: ");
     for (int i = 0; i < 6; i++) {
       Serial.printf("%02X", info->src_addr[i]);
       if (i < 5) Serial.print(":");
@@ -1123,7 +1159,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   uint8_t current_channel;
   wifi_second_chan_t second;
   esp_wifi_get_channel(&current_channel, &second);
-  if (log_detail>=3) Serial.printf("   Canal WiFi actuel: %d\n\r", current_channel);
+  if (log_detail>=4) Serial.printf("   Canal WiFi actuel: %d\n\r", current_channel);
   if (log_detail>=3)Serial.printf("   Taille recue: %d octets\n\r", len);
   
   if (len > sizeof(Message_EspNow)) {
@@ -1134,8 +1170,9 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   memcpy(&msg, data, sizeof(msg));
   uint8_t renvoi_ack=0;
 
-  if (log_detail>=2)
+  if (log_detail>=3)
   {
+    Serial.printf("   Donnees reçues: ");
     for (uint8_t i = 0; i < len; i++) Serial.printf("%02X ", data[i]);
     Serial.println();
   }
@@ -1149,7 +1186,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
         if (log_detail>=3) Serial.println("Ack recu");
         if (ackExpectedSequence == msg.num_seq)
         {
-          if (log_detail>=3) Serial.println("Numero de sequence Ackcorrect");
+          if (log_detail>=2) Serial.println("Ack recu correct");
           ackReceived = true;
         }
         else

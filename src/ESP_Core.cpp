@@ -124,6 +124,7 @@ uint8_t sdcard_ok;
 
 uint8_t init_masquage=1;
 
+
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
 #else
@@ -133,7 +134,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
 uint8_t envoi_data_gateway(Message_EspNow mess_esp);
 uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow *message);
-uint8_t traitement_queue_data_gateway();
+uint8_t traitement_queue_data_gateway(uint8_t mise_veille);
 void vTimerGatewayQueueCallback(TimerHandle_t xTimer);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
 void traitement_espnow_recv(EspNowRecvMsg_t &recv);
@@ -275,29 +276,97 @@ QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
 QueueHandle_t QueueUart;   // file d'attente pour message uart en réception
 QueueHandle_t QueueUart1;   // file d'attente pour message uart en réception
 QueueHandle_t QueueEspNow;  // file d'attente pour messages ESP-NOW reçus
-QueueHandle_t QueueDataGateway;  // file d'attente des messages ESP-NOW à envoyer
-
 #define GATEWAY_QUEUE_CAPACITY_BYTES 5000
-#define GATEWAY_QUEUE_LENGTH 334
 static SemaphoreHandle_t gatewayQueueMutex = NULL;
 static SemaphoreHandle_t gatewayProcessMutex = NULL;
-static size_t gatewayQueueBytes = 0;
 static portMUX_TYPE gatewayInitMux = portMUX_INITIALIZER_UNLOCKED;
+RTC_NOINIT_ATTR uint8_t gatewayBuffer[GATEWAY_QUEUE_CAPACITY_BYTES];
+RTC_NOINIT_ATTR uint16_t gatewayHead = 0;
+RTC_NOINIT_ATTR uint16_t gatewayTail = 0;
+RTC_NOINIT_ATTR uint32_t gatewayBufferMagic = 0;
+#define GATEWAY_BUFFER_MAGIC 0x47575131UL
+static void reset_gateway_buffer();
 
 static bool ensure_gateway_queue()
 {
   portENTER_CRITICAL(&gatewayInitMux);
-  if (QueueDataGateway == NULL)
-    QueueDataGateway = xQueueCreate(GATEWAY_QUEUE_LENGTH, sizeof(uint8_t *));
   if (gatewayQueueMutex == NULL)
     gatewayQueueMutex = xSemaphoreCreateMutex();
   if (gatewayProcessMutex == NULL)
     gatewayProcessMutex = xSemaphoreCreateMutex();
-  const bool initialized = QueueDataGateway != NULL &&
-                           gatewayQueueMutex != NULL &&
+  if (gatewayBufferMagic != GATEWAY_BUFFER_MAGIC)
+  {
+    reset_gateway_buffer();
+    gatewayBufferMagic = GATEWAY_BUFFER_MAGIC;
+  }
+  const bool initialized = gatewayQueueMutex != NULL &&
                            gatewayProcessMutex != NULL;
   portEXIT_CRITICAL(&gatewayInitMux);
   return initialized;
+}
+
+static void reset_gateway_buffer()
+{
+  gatewayHead = 0;
+  gatewayTail = 0;
+}
+
+static size_t gateway_buffer_used()
+{
+  if (gatewayHead >= GATEWAY_QUEUE_CAPACITY_BYTES ||
+      gatewayTail >= GATEWAY_QUEUE_CAPACITY_BYTES)
+  {
+    reset_gateway_buffer();
+    return 0;
+  }
+  return gatewayTail >= gatewayHead
+           ? gatewayTail - gatewayHead
+           : GATEWAY_QUEUE_CAPACITY_BYTES - gatewayHead + gatewayTail;
+}
+
+static uint8_t gateway_buffer_read(size_t offset)
+{
+  return gatewayBuffer[(gatewayHead + offset) % GATEWAY_QUEUE_CAPACITY_BYTES];
+}
+
+static void gateway_buffer_read_message(Message_EspNow *message, uint8_t messageSize)
+{
+  for (uint8_t i = 0; i < messageSize; ++i)
+    reinterpret_cast<uint8_t *>(message)[i] = gateway_buffer_read(i + 1);
+}
+
+static void gateway_buffer_write_message(const Message_EspNow *message, uint8_t messageSize)
+{
+  gatewayBuffer[gatewayTail] = messageSize;
+  gatewayTail = (gatewayTail + 1) % GATEWAY_QUEUE_CAPACITY_BYTES;
+  for (uint8_t i = 0; i < messageSize; ++i)
+  {
+    gatewayBuffer[gatewayTail] = reinterpret_cast<const uint8_t *>(message)[i];
+    gatewayTail = (gatewayTail + 1) % GATEWAY_QUEUE_CAPACITY_BYTES;
+  }
+}
+
+static uint16_t gateway_buffer_message_count()
+{
+  const size_t used = gateway_buffer_used();
+  size_t offset = 0;
+  uint16_t count = 0;
+  while (offset < used)
+  {
+    const uint8_t messageSize =
+        gatewayBuffer[(gatewayHead + offset) % GATEWAY_QUEUE_CAPACITY_BYTES];
+    if (messageSize < 4 || messageSize > 220 ||
+        offset + 1 + messageSize > used)
+    {
+      reset_gateway_buffer();
+      return 0;
+    }
+    offset += 1 + messageSize;
+    ++count;
+  }
+  if (offset != used)
+    reset_gateway_buffer();
+  return count;
 }
 
 //timers
@@ -836,7 +905,7 @@ void taskHandler(void *parameter) {
 
                     if (force_stay_awake) {
                         wake_up_time = millis() + prolong_veille*1000; // Prolonger sur réception  message UART
-                        Serial.printf("Activité UART détectée : prolongation du délai de %is.\n\r", prolong_veille);
+                        Serial.printf("Activite UART detectee : prolongation du delai de %is.\n\r", prolong_veille);
                     }
                     
                     UartMessage_t uartMsg;
@@ -879,7 +948,7 @@ void taskHandler(void *parameter) {
                   break;
 
                 case EVENT_GATEWAY_QUEUE:
-                  traitement_queue_data_gateway();
+                  traitement_queue_data_gateway(1);  // avec veille à la fin
                   break;
 
                 case EVENT_GPIO_OFF:  
@@ -1054,6 +1123,7 @@ void taskHandler(void *parameter) {
 // init des variables RTC, lors d'un cold Reset
 void init_rtc_variables()
 {
+  etat_now=0;
   cpt_cycle_batt = 1;
   for (uint8_t i=0; i<NB_Graphique; i++)
   {
@@ -1065,6 +1135,7 @@ void init_rtc_variables()
   init_rtc_variables_appli();
 }
 
+// init ram variables, à chaque boot (froid ou chaud)
 void init_ram_variables()
 {
   err_Tint=0;
@@ -1524,9 +1595,9 @@ void setup()
     // création de la queue de reception des messages ESP-NOW
     QueueEspNow = xQueueCreate(4, sizeof(EspNowRecvMsg_t));
 
-    // Queue d'envoi ESP-NOW : les blocs alloués ont exactement leur taille utile
+    // Initialisation des mutex du buffer RTC d'envoi ESP-NOW
     if (!ensure_gateway_queue())
-      Serial.println("Erreur : queue d'envoi ESP-NOW non créée !");
+      Serial.println("Erreur : mutex du buffer d'envoi ESP-NOW non créé !");
     gatewayQueueTimer = xTimerCreate("GatewayQueue",
                                      pdMS_TO_TICKS(500),
                                      pdFALSE,
@@ -1597,7 +1668,7 @@ void setup()
       if (PARAMS[i].order==1)  // log_detail
       {
           apply_log_detail(log_detail);
-          Serial.printf("log_detail:%i\n\r", log_detail);
+          if (log_detail>=4) Serial.printf("log_detail:%i\n\r", log_detail);
       }
       if (PARAMS[i].order==61) // adresse Mac Gateway
       {
@@ -4016,10 +4087,10 @@ void writeLog(uint8_t code, uint8_t c1, uint8_t c2, uint8_t c3, const char* mess
     //esp_err_t err = ESP_OK;
 
     if (err == ESP_OK) {
-      if (log_detail>=4) Serial.printf("Log écrit !, size:%d\n\r", size);
+      if (log_detail>=4) Serial.printf("Log ecrit !, size:%d\n\r", size);
       activeIndex++;  // Avance pour le prochain log
     } else {
-      Serial.printf("Erreur écriture log: %s\n\r", esp_err_to_name(err));
+      Serial.printf("Erreur ecriture log: %s\n\r", esp_err_to_name(err));
     }
   }
 }
@@ -4217,10 +4288,10 @@ void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3)
     //esp_err_t err = ESP_OK;
 
     if (err == ESP_OK) {
-      Serial.println("Log écrit_G !");
+      Serial.println("Log ecrit_G !");
       activeIndexG++;  // Avance pour le prochain log
     } else {
-      Serial.printf("Erreur écriture log_G: %s\n\r", esp_err_to_name(err));
+      Serial.printf("Erreur ecriture log_G: %s\n\r", esp_err_to_name(err));
     }
   }
 }
@@ -4382,6 +4453,7 @@ void loop()
          uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
          if (mode_rapide==12)
           sleep_time = (uint64_t)periode_cycle * 1000000;
+          if (force_stay_awake == 2) force_stay_awake=0;  // 2:forcage 1 seule fois
           passage_deep_sleep(sleep_time);  // 30ULL * 1000000ULL); //
       }
     }
@@ -4406,7 +4478,7 @@ void passage_deep_sleep(uint64_t temps)
 
   if (log_detail>=3) Serial.printf("PIN_REVEIL state = %d %d\n\r", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
 
-  if (log_detail>=2) Serial.printf("Passage deep sleep pour %llu milis:%lu\n\r", (unsigned long long)sleep_us, millis());
+  if (log_detail>=1) Serial.printf("Passage deep sleep pour %llu milis:%lu\n\r", (unsigned long long)sleep_us, millis());
 
   esp_sleep_enable_timer_wakeup(temps);
 
@@ -5128,9 +5200,9 @@ uint8_t connectWiFiWithDiagnostic() {
       Serial.printf("   - Gateway: %s\n\r", WiFi.gatewayIP().toString().c_str());
       Serial.printf("   - DNS: %s\n\r", WiFi.dnsIP().toString().c_str());
     }
-    if (log_detail>=2) {
+    if (log_detail>=1) {
       Serial.printf("   - Adresse IP: %s\n\r", WiFi.localIP().toString().c_str());
-      Serial.printf("   - RSSI: %d dBm\n\r", WiFi.RSSI());
+      Serial.printf("   - RSSI: %d dBm  Canal: %d\n\r", WiFi.RSSI(), WiFi.channel());
     }
     // Optimisation consommation : activation du Modem Sleep
     WiFi.setSleep(false);
@@ -5153,7 +5225,7 @@ uint8_t connectWiFiRapide()
     return 1;
   }
   
-  Serial.printf("Connexion au réseau: %s\n\r", nom_routeur);
+  if (log_detail>=3) Serial.printf("Connexion au réseau: %s\n\r", nom_routeur);
     // Configuration WiFi en mode Station pour ESP-NOW
     WiFi.mode(WIFI_STA); 
     
@@ -5165,7 +5237,7 @@ uint8_t connectWiFiRapide()
       IPAddress ipPrimaryDNS = makeIPAddress(primaryDNS);
       IPAddress ipSecondaryDNS = makeIPAddress(secondaryDNS);
 
-      Serial.printf("Configuration IP statique: %s\n\r", ipLocal.toString().c_str());
+      if (log_detail>=3) Serial.printf("Configuration IP statique: %s\n\r", ipLocal.toString().c_str());
       if (!WiFi.config(ipLocal, ipGateway, ipSubnet, ipPrimaryDNS, ipSecondaryDNS)) {
       Serial.println("❌ ERREUR: Échec de configuration IP statique");
       return 2;
@@ -5236,7 +5308,7 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
     if (WiFi.getMode() != WIFI_STA && WiFi.getMode() != WIFI_AP_STA)
     {
       WiFi.mode(WIFI_STA);
-      if (log_detail >= 3) Serial.println("WiFi mode set to STA for ESP-NOW");
+      if (log_detail >= 4) Serial.println("WiFi mode set to STA for ESP-NOW");
     }
 
     if (esp_now_init() != ESP_OK)
@@ -5255,13 +5327,14 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
     peerInfo.encrypt = false;
     peerInfo.ifidx = WIFI_IF_STA;
 
-    if (log_detail >= 2) Serial.printf("🔍 Esp_now canal %d)\n\r", last_wifi_channel);
+    if (log_detail >= 4) Serial.printf("🔍 Esp_now canal %d)\n\r", last_wifi_channel);
     uint8_t deliverySuccess = false;
     uint8_t current_channel;
     if (!last_wifi_channel || last_wifi_channel > 13) last_wifi_channel = 1;
 
-    if (etat_now == 0)
+    if (etat_now == 0)  // etat précédent : initial (non encore tenté)
     {
+      // on commence par WIFI_CHANNEL puis on essaye tous les autres
       for (uint8_t k = 0; k < 13; k++)
       {
         current_channel = k + last_wifi_channel;
@@ -5269,25 +5342,37 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
         deliverySuccess = envoi_now(current_channel, &peerInfo, mess_esp);
         if (deliverySuccess) break;
       }
-      etat_now = deliverySuccess ? 2 : 1;
+      etat_now = deliverySuccess ? 2 : 1;  // 2:réussi 1:raté(jamais réussi)
     }
-    else if (etat_now == 2)
+    else if (etat_now == 2)  // envoi précédent :réussi 
     {
       deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, mess_esp);
-      if (!deliverySuccess) etat_now = 4;
+      if (!deliverySuccess) etat_now = 4;  // envoi actuel échoué, apres une réussite
     }
-    else if (etat_now == 1 || etat_now == 3)
+    else if (etat_now == 1 || etat_now == 3) // envoi précédent : échoué ou partiellement réussi
     {
-      deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, mess_esp);
-      if (deliverySuccess) etat_now = 2;
+      // on alterne : 1:essaye WIFI_CHANNEL  3:essaye un nouveau canal
+      if (etat_now == 1)
+      {
+        etat_now=3;
+        deliverySuccess = envoi_now(WIFI_CHANNEL, &peerInfo, mess_esp);
+      }
       else
       {
-        last_wifi_channel++;
+        etat_now=1;
+        deliverySuccess = envoi_now(last_wifi_channel, &peerInfo, mess_esp);
+      }
+
+      if (deliverySuccess) etat_now = 2; // envoi actuel réussi
+      else
+      {
+      if (etat_now == 1) last_wifi_channel++; // si on alterne, on change de canal
         if (last_wifi_channel > 13) last_wifi_channel = 1;
       }
     }
-    else if (etat_now == 4)
+    else if (etat_now == 4) // envoi précédent échoué, mais celui d'avant réussi
     {
+      // reessaye tous les canaux wifi et on termine par le premier
       for (uint8_t k = 0; k < 14; k++)
       {
         current_channel = k + last_wifi_channel;
@@ -5307,56 +5392,102 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
   return 2;
 }
 
-uint8_t traitement_queue_data_gateway()
+uint8_t traitement_queue_data_gateway(uint8_t mise_veille)
 {
+  uint8_t result = 0;
+
   if (!ensure_gateway_queue() ||
       xSemaphoreTake(gatewayProcessMutex, portMAX_DELAY) != pdTRUE)
-    return 1;
-
-  uint8_t result = 0;
-  uint8_t *message = NULL;
-  if (xQueuePeek(QueueDataGateway, &message, 0) == pdTRUE)
-  {
-    result = envoyer_data_gateway_direct(reinterpret_cast<Message_EspNow *>(message));
-    if (log_detail >= 3) Serial.printf("Traitement queue data gateway : result=%d, longueur=%d\n\r",
-                  result, reinterpret_cast<Message_EspNow *>(message)->longueur);
-    if (result == 0) // envoi réussi
-    {
-      if (xQueueReceive(QueueDataGateway, &message, 0) != pdTRUE)
       {
-        Serial.printf("Erreur : impossible de retirer le message de la queue (result=%d)\n\r", result);
+        result = 2;
+      }
+
+  Message_EspNow message;
+  uint8_t messageSize = 0;
+  bool hasMessage = false;
+
+  if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
+  {
+    const size_t used = gateway_buffer_used();
+    if (used > 0)
+    {
+      messageSize = gatewayBuffer[gatewayHead];
+      if (messageSize < 4 || messageSize > 220 ||
+          static_cast<size_t>(messageSize) + 1 > used)
+      {
+        //Serial.println("Corruption du buffer gateway : taille invalide");
+        reset_gateway_buffer();
+        result = 1;
       }
       else
       {
-        const size_t messageSize = reinterpret_cast<Message_EspNow *>(message)->longueur + 3;
-        if (log_detail >= 3) Serial.printf("longueur du message envoye : %zu\n\r", messageSize);
-        free(message);
-        if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
+        gateway_buffer_read_message(&message, messageSize);
+        hasMessage = true;
+      }
+    }
+    xSemaphoreGive(gatewayQueueMutex);
+  }
+
+  if (hasMessage && result == 0)
+  {
+    result = envoyer_data_gateway_direct(&message);
+    if (log_detail >= 3)
+      Serial.printf("Message envoye : result=%d, longueur=%d\n\r",
+                    result, message.longueur);
+
+    if (result == 0 &&
+        xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
+    {
+      const size_t usedBefore = gateway_buffer_used();
+      const size_t recordSize = static_cast<size_t>(messageSize) + 1;
+      if (usedBefore < recordSize)
+      {
+        Serial.println("Corruption du buffer gateway : longueur incohérente");
+        reset_gateway_buffer();
+        result = 1;
+      }
+      else
+      {
+        gatewayHead = (gatewayHead + recordSize) % GATEWAY_QUEUE_CAPACITY_BYTES;
+        if (usedBefore == recordSize && gatewayHead != gatewayTail)
         {
-          if (gatewayQueueBytes >= messageSize)
-            gatewayQueueBytes -= messageSize;
-          else
-            gatewayQueueBytes = 0;
-          xSemaphoreGive(gatewayQueueMutex);
-        }
-        if (xQueuePeek(QueueDataGateway, &message, 0) == pdTRUE)
-        {
-          if (log_detail >= 3) Serial.printf("Messages restants dans la queue : %u\n\r", static_cast<unsigned>(uxQueueMessagesWaiting(QueueDataGateway)));
-          // Start timer gatewayQueueTimer
-          xTimerStart(gatewayQueueTimer, 0);
-        }
-        else
-        {
-          if (log_detail >= 3) Serial.println("Aucun message restant dans la queue.");
-          if (log_detail >=4) printMemoryStatus();
+          Serial.println("Corruption du buffer gateway : head != tail");
+          reset_gateway_buffer();
+          result = 1;
         }
       }
+      xSemaphoreGive(gatewayQueueMutex);
     }
   }
 
-  xSemaphoreGive(gatewayProcessMutex);
+  if (result == 0 && xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
+  {
+    const uint16_t remaining = gateway_buffer_message_count();
+    xSemaphoreGive(gatewayQueueMutex);
+    if (remaining > 0 && gatewayQueueTimer != NULL)  // autres messages à envoyer
+    {
+      xTimerStart(gatewayQueueTimer, 0);
+      if (log_detail >= 1)
+        Serial.printf("Messages restants dans le buffer a envoyer : %u\n\r", remaining);
+    }
+    else // plus de message à envoyer
+    {
+      if (log_detail >= 3)  Serial.printf("Plus de Messages restants dans le buffer RTC : \n\r");
+      if ((type_reveil <=3)  && mise_veille)  // reveil timer, PIR ou inconnu
+      {
+        uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+        if (mode_rapide==12)
+        sleep_time = (uint64_t)periode_cycle * 1000000;
+
+        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+      }
+
+    }
+  }
+  if (result != 2) xSemaphoreGive(gatewayProcessMutex);
   return result;
 }
+
 
 uint8_t envoi_data_gateway(Message_EspNow mess_esp)
 {
@@ -5370,49 +5501,42 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
     return 1;
 
   const size_t messageSize = mess_esp.longueur + 3;
-  if (messageSize > sizeof(Message_EspNow))
+  if (messageSize < 4 || messageSize > 220 ||
+      messageSize > sizeof(Message_EspNow))
     return 2;
 
-  uint8_t *message = static_cast<uint8_t *>(malloc(messageSize));
-  if (message == NULL)
-    return 3;
-  memcpy(message, &mess_esp, messageSize);
-
   if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) != pdTRUE)
-  {
-    free(message);
     return 4;
-  }
 
-  const bool capacityAvailable =
-      gatewayQueueBytes + messageSize <= GATEWAY_QUEUE_CAPACITY_BYTES;
-  if (!capacityAvailable ||
-      xQueueSend(QueueDataGateway, &message, 0) != pdTRUE)
+  const size_t used = gateway_buffer_used();
+  const size_t recordSize = messageSize + 1;
+  if (used + recordSize >= GATEWAY_QUEUE_CAPACITY_BYTES)
   {
     xSemaphoreGive(gatewayQueueMutex);
-    free(message);
     return 5;
   }
-  gatewayQueueBytes += messageSize;
+  gateway_buffer_write_message(&mess_esp, static_cast<uint8_t>(messageSize));
   xSemaphoreGive(gatewayQueueMutex);
 
   // Un échec d'ack laisse le premier bloc en tête ; une nouvelle insertion
   // déclenchera une nouvelle tentative.
+  uint8_t num_queue = gateway_buffer_message_count();
+  if (log_detail >=1) Serial.printf("======= ENVOI MESSAGE =======queue:%i\n\r",num_queue);
   if (log_detail>=3)
   {
-    Serial.printf("Message ajouté a la queue (taille: %zu, bytes utilises: %zu, messages: %u, queue: %p)\n\r",
+    Serial.printf("Message ajoute au buffer RTC (taille: %zu, octets utilises: %zu, head: %u, tail: %u)\n\r",
                   messageSize,
-                  gatewayQueueBytes,
-                  static_cast<unsigned>(uxQueueMessagesWaiting(QueueDataGateway)),
-                  static_cast<void *>(QueueDataGateway));
+                  used + recordSize,
+                  gatewayHead,
+                  gatewayTail);
   }
-  return traitement_queue_data_gateway();
+  return traitement_queue_data_gateway(0);  // sans mise en veille à la fin
 }
 
 uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
 {
   uint8_t result = false;
-  if (log_detail >= 2) Serial.printf("\n--- Essai canal %d ---\n\r", channel);
+  if (log_detail >= 3) Serial.printf("\n--- Essai canal %d ---\n\r", channel);
   uint8_t actual_channel = 0;
   wifi_second_chan_t second;
 
@@ -5437,7 +5561,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
 
     delay(50);
     peerInfo->channel = actual_channel;
-    Serial.printf("STA non connecté : channel actuel: %d\n\r", actual_channel);
+    if (log_detail >= 1) Serial.printf("STA non connecté : channel actuel: %d\n\r", actual_channel);
   }
   else  // Wifi deja connecté, on ne peut pas changer de canal, on envoie sur le canal actuel
   {
@@ -5470,10 +5594,10 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
   ackExpectedSequence = message->num_seq;
   esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, message->longueur + 3);
 
-  if (log_detail >= 2)
+  if (log_detail >= 1)
   {
-    for (int i = 0; i < message->longueur + 3; i++)
-      Serial.printf("%02X ", ((uint8_t*)message)[i]);
+    Serial.printf("Envoi message : ");
+    for (int i = 0; i < message->longueur + 3; i++) Serial.printf("%02X ", ((uint8_t*)message)[i]);
       Serial.println();
   }
 
@@ -5489,7 +5613,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
     if (ackReceived)
     {
       result = true;
-      if (log_detail >= 2) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 3);
+      if (log_detail >= 3) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 3);
       if (last_wifi_channel != actual_channel)
       {
         last_wifi_channel = actual_channel;
