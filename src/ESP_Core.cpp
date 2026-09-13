@@ -1132,6 +1132,19 @@ void init_rtc_variables()
       graphique[j][i]=0;
     }
   }
+  tempI_moy24h=0;
+  tempE_moy24h=0;
+  Hum_24h=0;
+  HA_moy24h=0;
+  cpt24_Tint=0;
+  cpt24_Text=0; 
+  cpt24_Hum=0;
+  cpt24_HA=0;
+  TextV=0;
+  TintV=0;
+  HumV=0;
+  HAV=0; 
+
   init_rtc_variables_appli();
 }
 

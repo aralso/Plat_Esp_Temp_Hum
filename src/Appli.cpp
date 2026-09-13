@@ -348,7 +348,7 @@ void init_rtc_variables_appli()  // initialisation si perte d'alim
   Tick_6s=0;
   Mesure_6s_prec=0;
   envoi_6s_prec=0;
-  compteur_24h=710;  // TODO mettre 0
+  compteur_24h=0; 
 }
 
 void init_ram_variables_appli()  // initialisation à chaque démarrage/reset/réveil
@@ -381,9 +381,10 @@ void detection_pir()
 // log batterie et Temp moyenne toutes les 24h.
 void enreg_24h( uint8_t veille)
 {
-  Serial.printf("24h - Nb jours batt log: %i\n\r", Nb_jours_Batt_log);
     // Log toutes les jours/semaines : nb d'erreurs wifi et batteries
   float vbatt = readBatteryVoltage();
+  if (log_detail>=1) Serial.printf("24h - Nb jours batt log: %i vbatt:%.2f\n\r", Nb_jours_Batt_log, vbatt);
+
   if (Nb_jours_Batt_log)
   {
     if (log_detail>=3) Serial.printf("Tension Batterie : %.2f V\n\r", vbatt);
@@ -429,6 +430,7 @@ void enreg_24h( uint8_t veille)
   // graphique des temperatures quotidiennes
   uint16_t tempI=1, tempE=1, Hum=1, HA=1, PIR=1;
   if (cpt24_Tint)  tempI = (uint16_t)(tempI_moy24h/cpt24_Tint*10);
+  Serial.printf("tempI: %i cpt24_Tint: %i Temp24h I:%.2f \n\r", tempI, cpt24_Tint, tempI_moy24h);
   if (cpt24_Text)  tempE = (uint16_t)(tempE_moy24h/cpt24_Text*10);
   if (cpt24_Hum) Hum = (uint16_t)(Hum_24h/cpt24_Hum*10);
   if (cpt24_HA) HA = (uint16_t)(HA_moy24h/cpt24_HA*10);
@@ -467,9 +469,10 @@ void enreg_24h( uint8_t veille)
   graphique[0][4] = selec_graph(GRAPH2, HA, Hum, PIR);
   graphique[0][5] = selec_graph(GRAPH3, HA, Hum, PIR);  
 
-  if (log_detail>=3) Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i HA:%i\n\r", tempI, tempE, Hum, HA);
+  if (log_detail>=1) Serial.printf("Graphique 24h : Tint:%i Text:%i Hum:%i HA:%i\n\r", tempI, tempE, Hum, HA);
   writeLogG('G', tempI, HA, Hum); // Enregistrment en Flash des 3 valeurs du graphique
 
+  // Tick, Temp, Hum, Vbatt
   if (action_envoi && esp_now_actif)
   {
     Message_EspNow message;
@@ -482,12 +485,12 @@ void enreg_24h( uint8_t veille)
     message.num_seq = num_sequentiel;
 
     uint8_t pos = 0;
-    message.payload[pos++] = Tick_6s >> 16;
-    message.payload[pos++] = (uint8_t) (Tick_6s >> 8);
     message.payload[pos++] = (uint8_t) Tick_6s;
+    message.payload[pos++] = (uint8_t) (Tick_6s >> 8);
+    message.payload[pos++] = Tick_6s >> 16;
     payloadWrite(message.payload, pos, tempI);
     payloadWrite(message.payload, pos, Hum);
-    payloadWrite(message.payload, pos, (uint16_t)(vbatt*10));
+    payloadWrite(message.payload, pos, (uint16_t)(vbatt*100));
     message.longueur = 3 + pos;
 
     uint8_t result = envoi_data_gateway(message);  // envoi chaque 24h des valeurs à la gateway
@@ -879,11 +882,11 @@ uint8_t enreg_valeur()
     uint8_t pos = 1;
     for (uint8_t cpt = 0; cpt < cpt_nb_val; cpt++)
     {
+      message.payload[pos++] = (uint8_t) valTick[cpt];
+      message.payload[pos++] = (uint8_t) (valTick[cpt] >> 8);
+      message.payload[pos++] = valTick[cpt] >> 16;
       payloadWrite(message.payload, pos, valTemp[cpt]);  
       payloadWrite(message.payload, pos, valHum[cpt]);
-      message.payload[pos++] = valTick[cpt] >> 16;
-      message.payload[pos++] = (uint8_t) (valTick[cpt] >> 8);
-      message.payload[pos++] = (uint8_t) valTick[cpt];
       if (log_detail>=4)  Serial.printf("   %.2f°C %.2f%% %d min\n\r", valTemp[cpt]/100.0-40, valHum[cpt]/100.0, valTick[cpt]/10);
     }
     // Taille réelle du message envoyé
@@ -1079,11 +1082,12 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
   cpt24_PIR++;
 
   //Serial.printf("fin cycle :reveil:%i cpt:%i %i tint:%i 24h:%i\n\r", type_reveil, compteur_graph, skip_graph, graphique[0][0], compteur_24h);
-  
+  if (log_detail>=1) Serial.printf("compteur 24h:%i\n\r", compteur_24h);
+
   if (type_reveil != 10)      // si diff de toujours actif => compteur 24h
   {
     compteur_24h++;
-    if (compteur_24h >= 24*60/periode_cycle) // )  // toutes les 24h
+    if (compteur_24h >= (uint16_t)24*60/periode_cycle) // )  // toutes les 24h
     {
       Serial.println("24h");
       activation_writelog();
