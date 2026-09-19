@@ -33,7 +33,6 @@ Configuration des options de programmation :
 
 
 #define DELAI_PING  180  // en secondes, pour le websocket
-#define Version "V1.3"
 
 
 #define DEBUG_ETHERNET_WEBSERVER_PORT Serial
@@ -123,7 +122,8 @@ RTC_NOINIT_ATTR uint8_t action_envoi;
 uint8_t sdcard_ok;
 
 uint8_t init_masquage=1;
-
+RTC_NOINIT_ATTR uint8_t add_node;
+RTC_NOINIT_ATTR uint8_t vit_cpu;
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
@@ -550,7 +550,7 @@ void init_ram_variables_appli();
 void init_rtc_variables_appli();
 uint8_t connectWiFiRapide();
 uint8_t connectWiFiRapide();
-void setup_appli();
+uint8_t setup_appli();
 
 
 
@@ -873,9 +873,14 @@ void taskHandler(void *parameter) {
                     init_10_secondes();
                     init_masquage=0;
                     if (log_detail>=3) Serial.println("fin masquage des entrees");
-                    xTimerChangePeriod(xTimer_Init,attente_mise_heure*(1000/portTICK_PERIOD_MS),100);  // passage à 30 secondes
-                    xTimerStart(xTimer_Init,100);
-                    cpt_init++;
+                    init_time_ps();
+                    if (init_time>=3)  xTimerStop(xTimer_Init,100); // arret
+                    else
+                    {
+                      xTimerChangePeriod(xTimer_Init,attente_mise_heure*(1000/portTICK_PERIOD_MS),100);  // passage à 30 secondes
+                      xTimerStart(xTimer_Init,100);
+                      cpt_init++;
+                    }
                   }
                   else
                   {
@@ -1144,7 +1149,7 @@ void init_rtc_variables()
   TintV=0;
   HumV=0;
   HAV=0; 
-
+  vit_cpu = 240;
   init_rtc_variables_appli();
 }
 
@@ -1751,312 +1756,314 @@ void setup()
 
   setup_1();  // --------------   initialisation sonde temperature--10ms----------
 
-   if (log_detail>=4) Serial.printf("milli G: %lu\n\r", millis());
+  if (log_detail>=4) Serial.printf("milli G: %lu\n\r", millis());
 
-   setup_appli();
+  if (setup_appli())  // la suite n'est faite que si setup_appli renvoie 1
+  {  
 
-   if (log_detail>=4) Serial.printf("milli G2: %lu\n\r", millis());
+    if (log_detail>=4) Serial.printf("milli G2: %lu\n\r", millis());
 
-  // -------------- partition "log_flash" custom  pour Write-log -------------------
+    // -------------- partition "log_flash" custom  pour Write-log -------------------
 
-  logPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x99, "log_flash");
+    logPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x99, "log_flash");
 
 
-  if (!logPartition) {
-    Serial.println("Partition 'log_flash' non trouvée !");
-    log_err=1;
-  }
-  else
-  {
-    log_err=0; // ok
-    if (log_detail>=4) 
+    if (!logPartition) {
+      Serial.println("Partition 'log_flash' non trouvée !");
+      log_err=1;
+    }
+    else
     {
-      Serial.println("Partition 'log_flash' trouvée.");
-      delay(500 + random(1, 1001) );
+      log_err=0; // ok
+      if (log_detail>=4) 
+      {
+        Serial.println("Partition 'log_flash' trouvée.");
+        delay(500 + random(1, 1001) );
+      }
+
+      writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
+
+      if (boot_rapide < 2) delay(500);
+
+      if (log_detail>=4) 
+      {
+        readLastLogsBinary((uint8_t*)buffer_dmp, 10);  
+        delay(200);
+      }
     }
 
-    writeLog('R', resetReason0, rtc_valid, wakeup_reason, "Reset");
+    // Recherche de la partition "log_flashG" custom
+    logPartitionG = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x98, "log_flashG");
 
-    if (boot_rapide < 2) delay(500);
-
-    if (log_detail>=4) 
-    {
-      readLastLogsBinary((uint8_t*)buffer_dmp, 10);  
-      delay(200);
+    if (!logPartitionG) {
+      Serial.println("Partition 'log_flash_G' non trouvée !");
+      log_errG=1;
     }
-  }
+    else
+    {
+      log_errG=0;
+      if (log_detail>=4) Serial.println("Partition 'log_flash_G' trouvée.");
+    }
+    if (log_detail>=2) Serial.printf("milli H: %lu\n\r", millis());
 
-  // Recherche de la partition "log_flashG" custom
-  logPartitionG = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x98, "log_flashG");
+    // -------------   Configuration des timers FreeRTOS (max 49 jours)   --------------------
 
-  if (!logPartitionG) {
-    Serial.println("Partition 'log_flash_G' non trouvée !");
-    log_errG=1;
-  }
-  else
-  {
-    log_errG=0;
-    if (log_detail>=4) Serial.println("Partition 'log_flash_G' trouvée.");
-  }
-  if (log_detail>=2) Serial.printf("milli H: %lu\n\r", millis());
+    // Timer à l'initialisation pour masquer 10 secondes  init heure, puis 30 sec
+    xTimer_Init= xTimerCreate ("Init", (uint32_t)attente_init*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerInitCallback);
+    if (xTimer_Init == NULL)  Serial.println("Erreur : timer xTimer_Init non créé !");
 
-  // -------------   Configuration des timers FreeRTOS (max 49 jours)   --------------------
+    // Timer chaque 3 minutes pour test wifi
+    xTimer_3min= xTimerCreate ("3min", (uint32_t)3*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer3minCallback);
+    if (xTimer_3min == NULL)  Serial.println("Erreur : timer xTimer_3min non créé !");
 
-  // Timer à l'initialisation pour masquer 10 secondes  init heure, puis 30 sec
-  xTimer_Init= xTimerCreate ("Init", (uint32_t)attente_init*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerInitCallback);
-  if (xTimer_Init == NULL)  Serial.println("Erreur : timer xTimer_Init non créé !");
-
-  // Timer chaque 3 minutes pour test wifi
-  xTimer_3min= xTimerCreate ("3min", (uint32_t)3*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer3minCallback);
-  if (xTimer_3min == NULL)  Serial.println("Erreur : timer xTimer_3min non créé !");
-
-  // Timer chaque 24heures
-  xTimer_24H= xTimerCreate ("24H", (uint32_t)24*60*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer24HCallback);
-  if (xTimer_24H == NULL)  Serial.println("Erreur : timer xTimer_24h non créé !");
+    // Timer chaque 24heures
+    xTimer_24H= xTimerCreate ("24H", (uint32_t)24*60*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer24HCallback);
+    if (xTimer_24H == NULL)  Serial.println("Erreur : timer xTimer_24h non créé !");
 
 
 
-  // Timer cycle : lecture temp exterieur par internet
-  uint16_t perio = periode_cycle*60;  // minutes -> secondes
-  if (mode_rapide==12) perio = periode_cycle;   // en secondes
-  xTimer_Cycle= xTimerCreate ("Cycle", (uint32_t)perio*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerCycleCallback);
-  if (xTimer_Cycle == NULL)  Serial.println("Erreur : timer xTimer_cycle non créé !");
+    // Timer cycle : lecture temp exterieur par internet
+    uint16_t perio = periode_cycle*60;  // minutes -> secondes
+    if (mode_rapide==12) perio = periode_cycle;   // en secondes
+    xTimer_Cycle= xTimerCreate ("Cycle", (uint32_t)perio*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerCycleCallback);
+    if (xTimer_Cycle == NULL)  Serial.println("Erreur : timer xTimer_cycle non créé !");
 
 
-  // Timer de Délai pour fin de modifs autorisée (securité) : 15 minutes
-  xTimer_Securite= xTimerCreate ("Securite",15*60*(1000/portTICK_PERIOD_MS), pdFALSE, (void *) 0, vTimerSecuriteCallback);
-  if (xTimer_Securite == NULL)  Serial.println("Erreur : timer xTimer_Securite non créé !");
+    // Timer de Délai pour fin de modifs autorisée (securité) : 15 minutes
+    xTimer_Securite= xTimerCreate ("Securite",15*60*(1000/portTICK_PERIOD_MS), pdFALSE, (void *) 0, vTimerSecuriteCallback);
+    if (xTimer_Securite == NULL)  Serial.println("Erreur : timer xTimer_Securite non créé !");
 
-  // Timer de Délai pour websocket
-  xTimer_Websocket= xTimerCreate ("Websocket", (uint32_t)DelaiWebsocket*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWebsocketCallback);
-  if (xTimer_Websocket == NULL)  Serial.println("Erreur : timer xTimer_Websocket non créé !");
+    // Timer de Délai pour websocket
+    xTimer_Websocket= xTimerCreate ("Websocket", (uint32_t)DelaiWebsocket*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWebsocketCallback);
+    if (xTimer_Websocket == NULL)  Serial.println("Erreur : timer xTimer_Websocket non créé !");
 
-  // Timer de Délai pour watchdog : 13 sec
-  xTimer_Watchdog= xTimerCreate ("Watchdog", (uint32_t)WDT_TIMEOUT*(300/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWatchdogCallback);
-  if (xTimer_Watchdog == NULL)  Serial.println("Erreur : timer xTimer_Watchdog non créé !");
-
-
-
-  #ifdef WatchDog
-    esp_task_wdt_reset();
-    Serial.println("reset watchdog milieu setup");
-    delay(10);  // Important de mettre au moins 1ms
-    xTimerStart(xTimer_Watchdog,100);
-  #endif
-
-  if (log_detail>=2) Serial.printf("milli I: %lu\n\r", millis());
-
-  xTimerStart(xTimer_Init,100);
-  xTimerStart(xTimer_24H,100);
-  xTimerStart(xTimer_Cycle,100);
-  //xTimerStart(xTimer_Compresseur,100);
-
-  if (boot_rapide < 3) delay(1000); // Attente 4 sec pour que les boutons se stabilisent
-
-  if (log_detail>=2) Serial.printf("milli J: %lu\n\r", millis());
-
-  // Reset du watchdog avant de démarrer le réseau
-  #ifdef WatchDog
-    esp_task_wdt_reset();
-  #endif
-  //vTaskDelay(4000 / portTICK_PERIOD_MS); // Attente 4 sec pour que les boutons se stabilisent
-
-  if (websocket_on==2)
-  {
-    xTimerStart(xTimer_Websocket,100);    
-  }
+    // Timer de Délai pour watchdog : 13 sec
+    xTimer_Watchdog= xTimerCreate ("Watchdog", (uint32_t)WDT_TIMEOUT*(300/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWatchdogCallback);
+    if (xTimer_Watchdog == NULL)  Serial.println("Erreur : timer xTimer_Watchdog non créé !");
 
 
 
-  // -------------------- demarrage du reseau  ------------------
-
-  if (log_detail>=4) Serial.printf("mode reseau avant wifi:%i\n\r", mode_reseau);
-
-  #ifndef NO_RESEAU 
-
-  #ifdef MODE_Wifi
-    #ifdef DEBUG
-      mode_reseau=13;  // mode station en Debug
+    #ifdef WatchDog
+      esp_task_wdt_reset();
+      Serial.println("reset watchdog milieu setup");
+      delay(10);  // Important de mettre au moins 1ms
+      xTimerStart(xTimer_Watchdog,100);
     #endif
 
-    Serial.printf("reseau:%i\n\r", mode_reseau);
+    if (log_detail>=2) Serial.printf("milli I: %lu\n\r", millis());
 
-    if ((mode_reseau==11) || (mode_reseau==12)) // mode Access Point
+    xTimerStart(xTimer_Init,100);
+    xTimerStart(xTimer_24H,100);
+    xTimerStart(xTimer_Cycle,100);
+    //xTimerStart(xTimer_Compresseur,100);
+
+    if (boot_rapide < 3) delay(1000); // Attente 4 sec pour que les boutons se stabilisent
+
+    if (log_detail>=2) Serial.printf("milli J: %lu\n\r", millis());
+
+    // Reset du watchdog avant de démarrer le réseau
+    #ifdef WatchDog
+      esp_task_wdt_reset();
+    #endif
+    //vTaskDelay(4000 / portTICK_PERIOD_MS); // Attente 4 sec pour que les boutons se stabilisent
+
+    if (websocket_on==2)
     {
-      WiFi.mode(WIFI_AP_STA);
-      Serial.printf("lancement mode access point:%i au 192.168.254.1\n\r", mode_reseau);
-      WiFi.softAP(ssid_AP, password_AP);
-      WiFi.softAPConfig(local_ip_AP, gateway_AP, subnet_AP);
-      Serial.println(" Starting AP Wifi Web server " + String(ARDUINO_BOARD));
-      etat_connect_ethernet = 1;
+      xTimerStart(xTimer_Websocket,100);    
     }
-    else  // mode=13 : Station
-    {
-      xTimerStart(xTimer_3min,100);
 
-      //WiFi.mode(WIFI_STA);
+
+
+    // -------------------- demarrage du reseau  ------------------
+
+    if (log_detail>=4) Serial.printf("mode reseau avant wifi:%i\n\r", mode_reseau);
+
+    #ifndef NO_RESEAU 
+
+    #ifdef MODE_Wifi
       #ifdef DEBUG
-        storeIPAddress(local_ip, Slocal_ip);
-        storeIPAddress(gateway, Sgateway);
-        storeIPAddress(subnet, Ssubnet);
-        storeIPAddress(primaryDNS, SprimaryDNS);
-        storeIPAddress(secondaryDNS, SsecondaryDNS);
-        
-        strncpy(nom_routeur, ssid, sizeof(nom_routeur) - 1);
-        nom_routeur[sizeof(nom_routeur) - 1] = '\0'; // Sécurisation de la terminaison
-        strncpy(mdp_routeur, password, sizeof(mdp_routeur) - 1);
-        mdp_routeur[sizeof(mdp_routeur) - 1] = '\0'; // Sécurisation de la terminaison
+        mode_reseau=13;  // mode station en Debug
       #endif
-      //if (!WiFi.config(local_ip, gateway, subnet, primaryDNS, secondaryDNS))
-      //  Serial.println("Wifi STA Failed to configure");
-      
-      // Protection UART avant connexion WiFi
-      //protectUARTDuringWiFi();
-      if (log_detail>=2) Serial.printf("milli J1: %lu\n\r", millis());
 
-      uint8_t wifiResult;
-      if (boot_rapide >2)
-        wifiResult = connectWiFiRapide();
-      else
+      Serial.printf("reseau:%i\n\r", mode_reseau);
+
+      if ((mode_reseau==11) || (mode_reseau==12)) // mode Access Point
       {
-        wifiResult = connectWiFiWithDiagnostic();
-        if (wifiResult == 0) {
-          etat_connect_ethernet = 2;
-          eth_connected = true;
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-          //Serial.println("Wifi OK");
-          // Optimisation consommation : activation du Modem Sleep
-          //WiFi.setSleep(true);
-        }
-        else Serial.println("Wifi pas ok");
+        WiFi.mode(WIFI_AP_STA);
+        Serial.printf("lancement mode access point:%i au 192.168.254.1\n\r", mode_reseau);
+        WiFi.softAP(ssid_AP, password_AP);
+        WiFi.softAPConfig(local_ip_AP, gateway_AP, subnet_AP);
+        Serial.println(" Starting AP Wifi Web server " + String(ARDUINO_BOARD));
+        etat_connect_ethernet = 1;
       }
-      if (log_detail>=4) Serial.printf("milli J2: %lu\n\r", millis());
+      else  // mode=13 : Station
+      {
+        xTimerStart(xTimer_3min,100);
 
-      // Protection UART après connexion WiFi
-      //protectUARTDuringWiFi();
-      
-    }
+        //WiFi.mode(WIFI_STA);
+        #ifdef DEBUG
+          storeIPAddress(local_ip, Slocal_ip);
+          storeIPAddress(gateway, Sgateway);
+          storeIPAddress(subnet, Ssubnet);
+          storeIPAddress(primaryDNS, SprimaryDNS);
+          storeIPAddress(secondaryDNS, SsecondaryDNS);
+          
+          strncpy(nom_routeur, ssid, sizeof(nom_routeur) - 1);
+          nom_routeur[sizeof(nom_routeur) - 1] = '\0'; // Sécurisation de la terminaison
+          strncpy(mdp_routeur, password, sizeof(mdp_routeur) - 1);
+          mdp_routeur[sizeof(mdp_routeur) - 1] = '\0'; // Sécurisation de la terminaison
+        #endif
+        //if (!WiFi.config(local_ip, gateway, subnet, primaryDNS, secondaryDNS))
+        //  Serial.println("Wifi STA Failed to configure");
+        
+        // Protection UART avant connexion WiFi
+        //protectUARTDuringWiFi();
+        if (log_detail>=2) Serial.printf("milli J1: %lu\n\r", millis());
 
-  #else  // WT32 Ethernet
-    xTimerStart(xTimer_3min,100);
-    Serial.print("\nStarting AdvancedWebServer on " + String(ARDUINO_BOARD));
-    //Serial.println(" with " + String(SHIELD_TYPE));
+        uint8_t wifiResult;
+        if (boot_rapide >2)
+          wifiResult = connectWiFiRapide();
+        else
+        {
+          wifiResult = connectWiFiWithDiagnostic();
+          if (wifiResult == 0) {
+            etat_connect_ethernet = 2;
+            eth_connected = true;
+          }
+          if (WiFi.status() == WL_CONNECTED) {
+            //Serial.println("Wifi OK");
+            // Optimisation consommation : activation du Modem Sleep
+            //WiFi.setSleep(true);
+          }
+          else Serial.println("Wifi pas ok");
+        }
+        if (log_detail>=4) Serial.printf("milli J2: %lu\n\r", millis());
 
-    //Serial.println(ASYNC_WEBSERVER_WT32_ETH01_VERSION);
-
-    // To be called before ETH.begin()
-    Network.onEvent(onEvent);
-    ETH.begin();
-    ETH.config(myIP, myGW, mySN, myDNS);
-
-    delay(1000);
-
-    if (eth_connected) {
-      Serial.println("Connecté Ethernet");
-      etat_connect_ethernet = 2;
-    } else
-      Serial.println("pas connecté Ethernet");
-
-    Serial.print(F("HTTP EthernetWebServer is @ IP : "));
-    Serial.println(ETH.localIP());
-
-  #endif // wifi
-
-  // Configuration du serveur NTP
-    configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", ntpServer);
-    //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-    setupRoutes();
-
-    server.begin();
-
-  if (log_detail>=2) Serial.printf("milli L: %lu\n\r", millis());
-
-  #endif // No_reseau
-
-  if (log_detail>=3) printMemoryStatus();
-
-  if (boot_rapide < 1) delay(100);
-
-
-  // ------- changement de frequence CPU -------------------
-
-  uint16_t Cpu_freq = getCpuFrequencyMhz();
-  setCpuFrequencyMhz(80);
-  if (log_detail>=3) Serial.printf("CPU Freq: avant:%i  apres:%u\n\r", Cpu_freq, (unsigned int)getCpuFrequencyMhz());
-
-
-
-  // Redémarrage final du watchdog après la configuration réseau
-  #ifdef WatchDog
-    esp_task_wdt_reset();
-    Serial.println("reset watchdog après configuration réseau");
-  #endif
-
-
-  if (log_detail>=4) printMemoryStatus();
-
-  setup_2();  // Esp_now  et read LogG(99)
-
-  if (log_detail>=2) Serial.printf("milli M: %lu\n\r", millis());
-
-  // ------------  Configuration OTA -----------------
-
-  #ifdef OTA
-    ArduinoOTA.setHostname("ESP32_Tempa");
-    ArduinoOTA.setPassword("Corail2025");
-
-    ArduinoOTA.onStart([]() {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH) type = "sketch";
-      else type = "filesystem";
-      Serial.println("Mise à jour OTA: " + type);
-      //WiFi.setSleep(false);  // accelere l'ota
-    });
-
-    ArduinoOTA.onEnd([]() {
-      Serial.println("\nFin");
-      //WiFi.setSleep(true); 
-
-    });
-
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-      Serial.printf("Progression: %u%%\r", (progress / (total / 100)));
-    });
-
-    ArduinoOTA.onError([](ota_error_t error) {
-      Serial.printf("Erreur[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
-
-    //WiFi.setTxPower(WIFI_POWER_19_5dBm); // puissance max
-    ArduinoOTA.begin();
-
-    // 🔥 Fenêtre OTA de secours
-    if (boot_rapide < 2) {
-      if (log_detail>=3) Serial.println("Fenêtre OTA 5 secondes...");
-      unsigned long start = millis();
-      while (millis() - start < 5000) {
-        ArduinoOTA.handle();
-        delay(10);
+        // Protection UART après connexion WiFi
+        //protectUARTDuringWiFi();
+        
       }
-    }
 
-  #endif  // fin OTA
+    #else  // WT32 Ethernet
+      xTimerStart(xTimer_3min,100);
+      Serial.print("\nStarting AdvancedWebServer on " + String(ARDUINO_BOARD));
+      //Serial.println(" with " + String(SHIELD_TYPE));
+
+      //Serial.println(ASYNC_WEBSERVER_WT32_ETH01_VERSION);
+
+      // To be called before ETH.begin()
+      Network.onEvent(onEvent);
+      ETH.begin();
+      ETH.config(myIP, myGW, mySN, myDNS);
+
+      delay(1000);
+
+      if (eth_connected) {
+        Serial.println("Connecté Ethernet");
+        etat_connect_ethernet = 2;
+      } else
+        Serial.println("pas connecté Ethernet");
+
+      Serial.print(F("HTTP EthernetWebServer is @ IP : "));
+      Serial.println(ETH.localIP());
+
+    #endif // wifi
+
+    // Configuration du serveur NTP
+      configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", ntpServer);
+      //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+      setupRoutes();
+
+      server.begin();
+
+    if (log_detail>=2) Serial.printf("milli L: %lu\n\r", millis());
+
+    #endif // No_reseau
+
+    if (log_detail>=3) printMemoryStatus();
+
+    if (boot_rapide < 1) delay(100);
 
 
-  #ifdef SDCARD
-    if (!sd_init()) sdcard_ok=1;
-  #endif
+    // ------- changement de frequence CPU -------------------
 
-  //WiFi.setSleep(true);
+    uint16_t Cpu_freq = getCpuFrequencyMhz();
+    setCpuFrequencyMhz(vit_cpu);
+    if (log_detail>=3) Serial.printf("CPU Freq: avant:%i  apres:%u\n\r", Cpu_freq, (unsigned int)getCpuFrequencyMhz());
 
-  setup_3();
+
+
+    // Redémarrage final du watchdog après la configuration réseau
+    #ifdef WatchDog
+      esp_task_wdt_reset();
+      Serial.println("reset watchdog après configuration réseau");
+    #endif
+
+
+    if (log_detail>=4) printMemoryStatus();
+
+    setup_2();  // Esp_now  et read LogG(99)
+
+    if (log_detail>=2) Serial.printf("milli M: %lu\n\r", millis());
+
+    // ------------  Configuration OTA -----------------
+
+    #ifdef OTA
+      ArduinoOTA.setHostname("ESP32_Tempa");
+      ArduinoOTA.setPassword("Corail2025");
+
+      ArduinoOTA.onStart([]() {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH) type = "sketch";
+        else type = "filesystem";
+        Serial.println("Mise à jour OTA: " + type);
+        //WiFi.setSleep(false);  // accelere l'ota
+      });
+
+      ArduinoOTA.onEnd([]() {
+        Serial.println("\nFin");
+        //WiFi.setSleep(true); 
+
+      });
+
+      ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progression: %u%%\r", (progress / (total / 100)));
+      });
+
+      ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Erreur[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+      });
+
+      //WiFi.setTxPower(WIFI_POWER_19_5dBm); // puissance max
+      ArduinoOTA.begin();
+
+      // 🔥 Fenêtre OTA de secours
+      if (boot_rapide < 2) {
+        if (log_detail>=3) Serial.println("Fenêtre OTA 5 secondes...");
+        unsigned long start = millis();
+        while (millis() - start < 5000) {
+          ArduinoOTA.handle();
+          delay(10);
+        }
+      }
+
+    #endif  // fin OTA
+
+
+    #ifdef SDCARD
+      if (!sd_init()) sdcard_ok=1;
+    #endif
+
+    //WiFi.setSleep(true);
+
+    setup_3();
+  }
 
   Serial.printf("fin setup: %i ms\n\r", millis());
 
@@ -4751,7 +4758,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
       // Si une commande /get arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
       wake_up_time = millis() + prolong_veille*1000;  // prolongation si requete get
-      if (log_detail >=3) Serial.printf("Activité /get détectée : prolongation du délai de %is.\n\r", prolong_veille);
+      if (log_detail >=3) Serial.printf("Activité /get détectée : prolongation du delai de %is.\n\r", prolong_veille);
     #endif
 
     if ((request->hasParam("type")) && (request->hasParam("reg")))
@@ -4814,7 +4821,7 @@ server.on("/verif", HTTP_GET, [](AsyncWebServerRequest *request){
       // Si une commande /set arrive, on force le réveil si ce n'est pas déjà fait
       force_stay_awake = true;
       wake_up_time = millis() + prolong_veille*1000;  // prolongation si requete set
-      Serial.printf("Activité /set détectée : prolongation du délai de %is.\n\r", prolong_veille);
+      Serial.printf("Activité /set détectée : prolongation du delai de %is.\n\r", prolong_veille);
     #endif
 
     buffer_dmp[0]=0;
@@ -5405,6 +5412,8 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp)
   return 2;
 }
 
+// appel par le sequenceur pour envoyer 1 message dans la queue.
+// appel direct pour envoyer le dernier message de la queue.
 uint8_t traitement_queue_data_gateway(uint8_t mise_veille)
 {
   uint8_t result = 0;
@@ -5447,6 +5456,9 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille)
     if (log_detail >= 3)
       Serial.printf("Message envoye : result=%d, longueur=%d\n\r",
                     result, message.longueur);
+    if (result != 0)
+      Serial.printf("Message conserve dans le buffer gateway : result=%d\n\r",
+                    result);
 
     if (result == 0 &&
         xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) == pdTRUE)
@@ -5485,7 +5497,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille)
     }
     else // plus de message à envoyer
     {
-      if (log_detail >= 3)  Serial.printf("Plus de Messages restants dans le buffer RTC : \n\r");
+      if (log_detail >= 1)  Serial.printf("Plus de Messages restants dans le buffer RTC : \n\r");
       if ((type_reveil <=3)  && mise_veille)  // reveil timer, PIR ou inconnu
       {
         uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
@@ -5494,9 +5506,21 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille)
 
         passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
       }
-
     }
   }
+  else 
+  {
+    if ((type_reveil <=3)  && mise_veille)  // reveil timer, PIR ou inconnu
+    {
+      uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
+      if (mode_rapide==12)
+      sleep_time = (uint64_t)periode_cycle * 1000000;
+
+      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+    }
+  }
+  if (log_detail >= 1) Serial.printf("Fin d'envoi du message : result=%d\n\r", result);
+
   if (result != 2) xSemaphoreGive(gatewayProcessMutex);
   return result;
 }
@@ -5543,6 +5567,14 @@ uint8_t envoi_data_gateway(Message_EspNow mess_esp)
                   gatewayHead,
                   gatewayTail);
   }
+  // Impression du message envoyé en hexadécimal pour le débogage
+  if (log_detail>=2) {
+    for (size_t i = 0; i < messageSize; i++)
+    {
+      Serial.printf("%02X ", ((uint8_t*)&mess_esp)[i]);
+    }
+    Serial.println();
+  }
   return traitement_queue_data_gateway(0);  // sans mise en veille à la fin
 }
 
@@ -5566,7 +5598,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
     esp_err_t get_channel_err = esp_wifi_get_channel(&actual_channel, &second);
     if (err != ESP_OK || get_channel_err != ESP_OK || actual_channel != channel)
     {
-      Serial.printf("⚠️ Échec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
+      Serial.printf("⚠️ Echec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
                     channel, actual_channel,
                     esp_err_to_name(err != ESP_OK ? err : get_channel_err));
       return false;
@@ -5617,16 +5649,16 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
   if (resulta == ESP_OK)
   {
     int wait = 0;
-    while (!ackReceived && wait < 60)
+    while (!ackReceived && wait < 100)  // max 500ms
     {
-      delay(3);
+      delay(5);
       wait++;
     }
 
     if (ackReceived)
     {
       result = true;
-      if (log_detail >= 3) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 3);
+      if (log_detail >= 2) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 5);
       if (last_wifi_channel != actual_channel)
       {
         last_wifi_channel = actual_channel;

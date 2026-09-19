@@ -295,15 +295,17 @@ const char index_html[] PROGMEM = R"rawliteral(
                   16 : duree allumage (sec)<br>
                   17 : action : stockage<br>
                   18 : action : envoi<br>
-                  19 : frequence mesure temp:0:var >1:fixe<br>
+                  19 : frequence mesure temp:0:var >1:fixe 2:1/2<br>
                   20 : boot_rapide<br>
+                  21 : vitesse CPU (MHz)<br>
+                  22 : Adresse Node
                   40 : activ esp_now<br>
                   41 : canal wifi <br>
                   42 : canal wifi prérentiel (sonde)<br>
                   43 : puissance wifi<br>
                   44 : wifi_sleep (0,1,2)<br>
                   45 : (L)rssi wifi<br>
-                  70 : Capt:Periode max(min)<br>                  
+                  70 : Capt:Periode max(minutes)<br>                  
                   71 : Capt:Seuil temp(0.01°C)<br>                  
                   72 : Capt envoi:Nb val max<br>                  
                   73 : Capt envoi:Tps total(min)<br>                  

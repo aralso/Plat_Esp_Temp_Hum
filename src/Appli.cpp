@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /*
-v1.4 08/2026 nouveau core, trame temp variable
+v1.4 08/2026 nouveau core, trame temp variable, messages en queue
 v1.3 05/2026 board upesy, humidite absolue, envoi vers serveur
 v1.2 03/2026 Surveillance batterie, log 24h en eeprom, OTA à la demande
 v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
@@ -27,7 +27,7 @@ v1.1 03/2026 copie de plat_esp_chad_gar v1.11 de 3/2026
 extern WiFiClient client;
 extern Preferences preferences_nvs;  // Déclaration externe
 
-RTC_NOINIT_ATTR uint32_t envoi_6s_prec=0, Mesure_6s_prec=0;
+RTC_NOINIT_ATTR uint32_t envoi_6s_prec=0, Mesure_6s_prec;
 RTC_NOINIT_ATTR uint32_t Tick_6s;
 RTC_NOINIT_ATTR float TintPrec=20;
 
@@ -288,8 +288,10 @@ void traitement_recalage_espnow(uint8_t node)
 {
 }
 
-void setup_appli()
+uint8_t setup_appli()
 {
+  uint8_t continue_setup=1;  // continue le setup après return sauf si 0
+
   if (!rtc_valid)  // initialisation si perte d'alim
   {
     last_wifi_channel = WIFI_CHANNEL;  // prochain canal WiFi à utiliser après perte d'alim
@@ -308,7 +310,10 @@ void setup_appli()
   }
   else 
   {
-    if (type_reveil == 1)  event_cycle(); // réveil par timer
+    if (type_reveil == 1)  {
+      event_cycle(); // réveil par timer
+      continue_setup=0;  // ne continue pas le setup après réveil par timer
+    }
     else 
     {
       if (log_detail>=2) Serial.printf("milli H1: %lu\n\r", millis());
@@ -332,7 +337,7 @@ void setup_appli()
       }
     }
   }
-
+  return continue_setup;
 }
 
 void setupRoutes_appli()
@@ -342,13 +347,15 @@ void setupRoutes_appli()
 
 void init_rtc_variables_appli()  // initialisation si perte d'alim
 {
-  cpt24h_batt=6;   // compteur de jours
+  cpt24h_batt=6;   // compteur de jours - permet d'éviter d'attendre 6 jours avant le premier log batterie
   num_sequentiel=0;
   cpt_nb_val=0;
   Tick_6s=0;
   Mesure_6s_prec=0;
   envoi_6s_prec=0;
   compteur_24h=0; 
+  TintPrec=0;
+
 }
 
 void init_ram_variables_appli()  // initialisation à chaque démarrage/reset/réveil
@@ -478,7 +485,7 @@ void enreg_24h( uint8_t veille)
     Message_EspNow message;
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-    message.emetteur = ADDRESS;
+    message.emetteur = add_node;
     message.code = 'C';
     message.code2 = 'J';
     num_sequentiel++;
@@ -871,7 +878,7 @@ uint8_t enreg_valeur()
     Message_EspNow message;
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-    message.emetteur = ADDRESS;
+    message.emetteur = add_node;
     message.code = 'C';
     message.code2 = 'T';
     num_sequentiel++;
@@ -926,7 +933,7 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA, float vbatt)
   Message_EspNow message;
 
   message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-  message.emetteur = ADDRESS;
+  message.emetteur = add_node;
   message.code = 'C';
   message.code2 = 'I';
   num_sequentiel++;
@@ -1048,15 +1055,18 @@ void event_cycle()  // toutes les 15 minutes  (Power on, Timer on, inconnu)
       else // envoi lorsque les valeurs évoluent
       {
         uint8_t enreg=0;
-        if (Tint - TintPrec > Capt_seuil_temp) enreg=1;
-        if (TintPrec - Tint > Capt_seuil_temp) enreg=1;
-        if ((Tick_6s - Mesure_6s_prec)*10 > Capt_tps_max) enreg=1;
+        float diffTint = (Tint - TintPrec)*100;  // en 0,01°C
+        if (diffTint > Capt_seuil_temp) enreg=1;
+        Serial.printf("Temp Int: %.2f , Temp Int Prec: %.2f , Seuil: %i\n\r", Tint, TintPrec, Capt_seuil_temp);
+        if (-diffTint > Capt_seuil_temp) enreg=1;
+        if ((Tick_6s - Mesure_6s_prec) > Capt_tps_max*10) enreg=1;
+        Serial.printf("Tick_6s : %i, Mesure_6s_prec: %i, Capt_tps_max: %i\n\r", Tick_6s, Mesure_6s_prec, Capt_tps_max);
         if (enreg) {
-          Serial.printf("Envoi : %i minutes (cpt_nb_val=%i)\n\r", Capt_tps_max, cpt_nb_val);
+          Serial.printf("Envoi  (cpt_nb_val=%i)\n\r", cpt_nb_val);
           enreg_valeur();  // enreg puis envoi  par ESP-NOW
           TintPrec = Tint;
+          Mesure_6s_prec = Tick_6s;
         }
-        Mesure_6s_prec = Tick_6s;
       }
     }
     tempI_moy15m = 0;
@@ -1180,7 +1190,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
     for (uint8_t i = 0; i < len; i++) Serial.printf("%02X ", data[i]);
     Serial.println();
   }
-  if ((msg.destinataire & 0x7F) == ADDRESS)
+  if ((msg.destinataire & 0x7F) == add_node)
   {
     if (log_detail>=3) Serial.printf("Message de gateway node:%c\n\r", msg.emetteur);
     if ((msg.emetteur & 0x7F) == SERVER_ADD)
@@ -1242,7 +1252,7 @@ static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo,
     esp_err_t get_channel_err = esp_wifi_get_channel(&actual_channel, &second);
     if (err != ESP_OK || get_channel_err != ESP_OK || actual_channel != channel)
     {
-      Serial.printf("⚠️ Échec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
+      Serial.printf("⚠️ Echec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
                     channel, actual_channel,
                     esp_err_to_name(err != ESP_OK ? err : get_channel_err));
       return false;

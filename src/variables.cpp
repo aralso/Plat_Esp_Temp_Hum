@@ -17,14 +17,15 @@ Param PARAMS[] = {
   {"FrBL", 10, U8, 1, 15, 7, 0, nullptr, &Nb_jours_Batt_log, 0},         // registre 10 : nb jours log batterie
   // 11:reglage date, 12:reglage heure, 13:reglage OTA
   {"Allu", 15, U8, 0, 1, 0, 0, nullptr, &pas_de_veille, 0},   // 0:veille 1:pas de mise en veille
-  {"PVei", 16, U16, 15, 600, 30, 0, nullptr, &prolong_veille, 0},  // delai avant mise en veille (s)
-          // registre 16 : duree allumage (s)
+  {"PVei", 16, U16, 15, 600, 30, 0, nullptr, &prolong_veille, 0},  // delai avant mise en veille (s) // registre 16 : duree allumage (s)
 
   // Application settings
   {"AcSt", 17, U8, 0, 1, 0, 0, nullptr, &action_stockage, 0},        // action stockage
   {"AcEn", 18, U8, 0, 1, 0, 0, nullptr, &action_envoi, 0},           // action envoi
   {"FrEn", 19, U8, 0, 15, 2, 0, nullptr, &freq_envoi, 0},        // frequence envoi (par mesure) 0:var, >1:fixe
   {"BooRap", 20, U8, 0, 3, 1, 0, nullptr, &boot_rapide, 0},          // registre 11 : boot rapide (0:lent 1:normal 2:rapide 3:très rapide(pas LogG-ota))
+  {"Cpu", 21, U8, 40, 240, 240, 0, nullptr, &vit_cpu, 0},         // registre 11 : vitesse CPU (MHz)
+  {"Ad_node", 22, U8, 48, 122,90 ,0, nullptr, &add_node, 0},
 
 
 

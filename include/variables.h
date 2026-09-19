@@ -6,6 +6,7 @@
 #include <Arduino.h>  // for IPAddress, String types
 
 // variables externes
+#define Version "V1.4"
 
 
 #define ESP_VEILLE     // Rôle principal 
@@ -81,7 +82,7 @@ typedef struct {
 } ValeurTHR;
 
 #define MAX_PAYLOAD 200
-#define ADDRESS 'B'
+
 #define SERVER_ADD 'H'
 
 typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets de padding ajoutés par le compilateur
@@ -121,6 +122,7 @@ typedef struct Param {
 } Param;
 
 // Forward declarations for variables used in PARAMS
+extern uint8_t add_node;
 extern uint8_t log_detail;
 extern uint8_t mode_reseau;
 extern uint16_t nb_reset;
@@ -130,6 +132,7 @@ extern uint8_t DelaiWebsocket;
 extern  uint8_t skip_graph;
 extern uint16_t Seuil_batt_sonde;
 extern  uint8_t Nb_jours_Batt_log;
+extern uint8_t vit_cpu;
 extern uint8_t pas_de_veille;
 extern  uint16_t prolong_veille;
 extern  uint8_t action_stockage;
@@ -300,7 +303,7 @@ uint8_t requete_Set_appli(String param, float valf);
 uint8_t requete_GetReg(int reg, float* valeur);
 void  activation_writelog();
 void setup_nvs_rtc();
-void setup_appli();
+uint8_t setup_appli();
 void enreg_24h( uint8_t veille);
 void printMemoryStatus();
 void resetI2C();
