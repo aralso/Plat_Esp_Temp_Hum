@@ -89,13 +89,32 @@ typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets
     uint8_t destinataire;
     uint8_t emetteur;
     uint8_t longueur;
+    uint8_t num_seq;  // pour renvoi Ack
+    uint8_t statut;  // bit0:dernier message bit1:pas d'ack
     uint8_t code;
     uint8_t code2;
-    uint8_t num_seq;
     uint8_t payload[MAX_PAYLOAD];
 } Message_EspNow;
 
-uint8_t envoi_data_gateway(Message_EspNow mess_esp);
+uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node);
+
+#define NB_CAPT 1
+#define NB_OCTETS_NODE_TX 5000  // Définir la taille du buffer de transmission vers la gateway
+
+typedef struct {
+  uint8_t Add_node;
+  uint16_t nb_mess_recu;
+  uint8_t statut;  // bits0-1:00:inactif, 01:mode A(veille), 10:modeB(balise), 11:mode C 
+  uint8_t mac_node[6];
+  uint32_t dernier_timestamp_reçu; // derniere reception de message en 6s
+  uint32_t dernier_tick6s; // en 6s
+  bool offset_valide;
+  uint16_t head;
+  uint16_t tail;
+  uint8_t queue_tx[NB_OCTETS_NODE_TX];
+} S_Node;
+
+extern S_Node Node[1];
 
 // structure des paramètres 
 typedef enum ParamType {
@@ -452,5 +471,6 @@ void protectUARTDuringWiFi();
 // Configuration DHT22
 #define DHT22_TIMEOUT_MS 5000       // Timeout de lecture DHT22 en millisecondes
 #define DHT22_MIN_INTERVAL_MS 2000  // Intervalle minimum entre lectures DHT22
+
 
 #endif

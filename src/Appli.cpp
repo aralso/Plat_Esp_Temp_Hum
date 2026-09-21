@@ -181,6 +181,17 @@ void setup_0()
 void setup_1()
 {
 
+  // initialisation du node Gateway
+    if (log_detail>=2) Serial.printf("add_node Gateway \n\r");
+    Node[0].Add_node = SERVER_ADD;
+    Node[0].nb_mess_recu = 0; // initialiser l'état du nœud
+    Node[0].statut = 0b11; // mode C (tj actif)
+    Node[0].dernier_timestamp_reçu = 0;
+    Node[0].dernier_tick6s = 0;
+    Node[0].offset_valide = false;
+    memcpy(Node[0].mac_node, mac_gw, 6);
+
+
     Tint = 15;
     #ifdef Temp_int_HDC1080
       //delay(200);
@@ -365,7 +376,7 @@ void init_ram_variables_appli()  // initialisation à chaque démarrage/reset/r�
 
 void appli_event_on(systeme_eve_t evt)
 {
-  Serial.printf("bouton off-Evenement on : %i\n\r", evt.data);
+  if (log_detail>=3) Serial.printf("bouton off-Evenement on : %i\n\r", evt.data);
 
   if (evt.data == 1)  // bouton 1 relaché
   {
@@ -486,10 +497,11 @@ void enreg_24h( uint8_t veille)
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
     message.emetteur = add_node;
-    message.code = 'C';
-    message.code2 = 'J';
+    message.statut = 0b01;  // mode veille
     num_sequentiel++;
     message.num_seq = num_sequentiel;
+    message.code = 'C';
+    message.code2 = 'J';
 
     uint8_t pos = 0;
     message.payload[pos++] = (uint8_t) Tick_6s;
@@ -498,9 +510,9 @@ void enreg_24h( uint8_t veille)
     payloadWrite(message.payload, pos, tempI);
     payloadWrite(message.payload, pos, Hum);
     payloadWrite(message.payload, pos, (uint16_t)(vbatt*100));
-    message.longueur = 3 + pos;
+    message.longueur = 4 + pos;
 
-    uint8_t result = envoi_data_gateway(message);  // envoi chaque 24h des valeurs à la gateway
+    uint8_t result = envoi_data(message, 0);  // envoi chaque 24h des valeurs à la gateway
 
   }      
 }
@@ -508,13 +520,13 @@ void enreg_24h( uint8_t veille)
 
 void appli_event_off(systeme_eve_t evt)
 {
+  envoi_temp_hygro();
   // Detecteur PIR activé
   if (evt.data == 1)
   {
-      envoi_temp_hygro();
       //detection_pir();
   }
-  Serial.printf("Bouton on-Evenement off : %i\n\r", evt.data);
+ if (log_detail>=3) Serial.printf("Bouton on-Evenement off : %i\n\r", evt.data);
 }
 
 char* requete_status_appli(char *json_response, char *p, uint8_t type)
@@ -640,17 +652,15 @@ uint8_t requete_Set_String_appli(int param, const char *texte)
       {
           Serial.println("MAC Serveur invalide");
       }
-        else 
-          if (log_detail>=3) 
-          {
-            Serial.printf("MAC Serveur set : %X:%X:%X:%X:%X:%X\n\r", mac_gw[0], mac_gw[1], mac_gw[2], mac_gw[3], mac_gw[4], mac_gw[5]);
-            Serial.printf("Mac texte : %s\n\r", mac_gw_str);
-          }
-      /*else
+      else 
       {
-        preferences_nvs.putString("MacC", texte);
-        res = 0;
-      }*/
+        memcpy(Node[0].mac_node, mac_gw, 6);
+        if (log_detail>=3) 
+        {
+          Serial.printf("MAC Serveur set : %X:%X:%X:%X:%X:%X\n\r", mac_gw[0], mac_gw[1], mac_gw[2], mac_gw[3], mac_gw[4], mac_gw[5]);
+          Serial.printf("Mac texte : %s\n\r", mac_gw_str);
+        }
+      }
     }
 
   return res;
@@ -879,10 +889,11 @@ uint8_t enreg_valeur()
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
     message.emetteur = add_node;
-    message.code = 'C';
-    message.code2 = 'T';
+    message.statut = 0b01;  // mode veille
     num_sequentiel++;
     message.num_seq = num_sequentiel;
+    message.code = 'C';
+    message.code2 = 'T';
 
     message.payload[0] = cpt_nb_val;
     
@@ -897,9 +908,9 @@ uint8_t enreg_valeur()
       if (log_detail>=4)  Serial.printf("   %.2f°C %.2f%% %d min\n\r", valTemp[cpt]/100.0-40, valHum[cpt]/100.0, valTick[cpt]/10);
     }
     // Taille réelle du message envoyé
-    message.longueur = 3 + pos;
+    message.longueur = 4 + pos;
 
-    uint8_t result = envoi_data_gateway(message);   // envoi périodique des valeurs à la gateway
+    uint8_t result = envoi_data(message, 0);   // envoi périodique des valeurs à la gateway
 
 
     if (result == ESP_OK) {
@@ -934,21 +945,24 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA, float vbatt)
 
   message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
   message.emetteur = add_node;
-  message.code = 'C';
-  message.code2 = 'I';
+  message.statut = 0b01;  // mode veille
   num_sequentiel++;
   message.num_seq = num_sequentiel;
+  message.code = 'C';
+  message.code2 = 'I';
 
   uint8_t pos = 0;
-  payloadWrite(message.payload, pos, (uint16_t)(Tint * 100));
+  payloadWrite(message.payload, pos, (uint16_t)((Tint+40) * 100));
   payloadWrite(message.payload, pos, (uint16_t)(Humid * 100));
   payloadWrite(message.payload, pos, (uint16_t)(HA * 100));
   payloadWrite(message.payload, pos, (uint16_t)(vbatt * 100));
 
   // Taille réelle du message envoyé
-  message.longueur = 3+pos;
+  message.longueur = 4 + pos;
+  
+  if (log_detail>=4) Serial.printf("Message statut avant envoi: %u\n\r", message.statut);
 
-  uint8_t result = envoi_data_gateway(message);   // envoi valeurs instantanées à la gateway
+  uint8_t result = envoi_data(message, 0);   // envoi valeurs instantanées à la gateway
   return result;
 }
 
