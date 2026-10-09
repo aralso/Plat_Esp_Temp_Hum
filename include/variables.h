@@ -90,13 +90,13 @@ typedef struct __attribute__((packed)) {   // packed permet d'éviter les octets
     uint8_t emetteur;
     uint8_t longueur;
     uint8_t num_seq;  // pour renvoi Ack
-    uint8_t statut;  // bit0:dernier message bit1:pas d'ack
+    uint8_t statut;  //  bit0-1:node actif(C) bit2:dernier message  bit3:1:pas d'ack 
     uint8_t code;
     uint8_t code2;
     uint8_t payload[MAX_PAYLOAD];
-} Message_EspNow;
+} Message_Struct;
 
-uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node);
+uint8_t envoi_data(Message_Struct mess_esp, uint8_t node);
 
 #define NB_CAPT 1
 #define NB_OCTETS_NODE_TX 5000  // Définir la taille du buffer de transmission vers la gateway
@@ -104,11 +104,12 @@ uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node);
 typedef struct {
   uint8_t Add_node;
   uint16_t nb_mess_recu;
-  uint8_t statut;  // bits0-1:00:inactif, 01:mode A(veille), 10:modeB(balise), 11:mode C 
+  uint8_t Nstatut;  // bits0-1:00:inactif, 01:mode A(veille), 10:modeB(balise), 11:mode C 
   uint8_t mac_node[6];
   uint32_t dernier_timestamp_reçu; // derniere reception de message en 6s
   uint32_t dernier_tick6s; // en 6s
   bool offset_valide;
+  uint8_t num_sequentiel;
   uint16_t head;
   uint16_t tail;
   uint8_t queue_tx[NB_OCTETS_NODE_TX];
@@ -141,7 +142,7 @@ typedef struct Param {
 } Param;
 
 // Forward declarations for variables used in PARAMS
-extern uint8_t add_node;
+extern uint8_t My_Address;
 extern uint8_t log_detail;
 extern uint8_t mode_reseau;
 extern uint16_t nb_reset;
@@ -183,6 +184,7 @@ extern uint8_t delai_detection;
 extern uint16_t calib_temp;
 extern uint16_t calib_hygro1;
 extern uint16_t calib_hygro2;
+extern uint16_t val_test;
 
 extern const size_t PARAMS_COUNT;
 extern Param PARAMS[];
@@ -193,6 +195,8 @@ void payloadWrite(uint8_t* payload, uint8_t& pos, const T& value)
     memcpy(&payload[pos], &value, sizeof(T));
     pos += sizeof(T);
 }
+
+extern int8_t last_rssi;
 
 //  -------  CONFIGURATION DES PINS
 //  -----------------------------------------------
@@ -335,6 +339,7 @@ void envoi_temp_hygro();
 void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3);
 
 void passage_deep_sleep(uint64_t temps);
+void envoi_ack(Message_Struct &msg);
 
 extern float Vbatt_ESP;   // Tension batterie ESP
 extern struct tm timeinfo;
@@ -353,6 +358,7 @@ typedef enum {
   EVENT_ERREUR,
   EVENT_ECOUTE_WebSock,
   EVENT_GATEWAY_QUEUE,
+  EVENT_REVEIL_PERIODIQUE,
   EVENT_WATCHDOG,
   EVENT_24H,
   EVENT_3min,
@@ -369,8 +375,9 @@ typedef struct {
 // Structure pour la queue de réception ESP-NOW (message + adresse source)
 typedef struct {
   uint8_t src_addr[6];
-  Message_EspNow msg;
+  Message_Struct msg;
   int len;
+  int8_t rssi;
 } EspNowRecvMsg_t;
 
 /* Codes erreur*/
@@ -416,6 +423,8 @@ extern uint8_t rtc_valid;  // 0:cold reset  1:reset apres deep sleep
 extern  uint16_t cpt_cycle_batt;                   // Compteur cycles pour mesure batterie
 extern volatile uint8_t ackReceived;  // global pour indiquer que le peer a acké
 extern volatile int ackChannel;       // canal où ça a marché
+extern uint8_t num_sequentiel;  // pour Ack
+
 extern uint8_t mode_reseau;
 extern  uint8_t init_time;
 extern float heure;

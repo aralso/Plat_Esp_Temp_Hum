@@ -25,7 +25,7 @@ Param PARAMS[] = {
   {"FrEn", 19, U8, 0, 15, 2, 0, nullptr, &freq_envoi, 0},        // frequence envoi (par mesure) 0:var, >1:fixe
   {"BooRap", 20, U8, 0, 3, 1, 0, nullptr, &boot_rapide, 0},          // registre 11 : boot rapide (0:lent 1:normal 2:rapide 3:très rapide(pas LogG-ota))
   {"Cpu", 21, U8, 40, 240, 240, 0, nullptr, &vit_cpu, 0},         // registre 11 : vitesse CPU (MHz)
-  {"Ad_node", 22, U8, 48, 122,90 ,0, nullptr, &add_node, 0},
+  {"Ad_node", 22, U8, 48, 122,90 ,0, nullptr, &My_Address, 0},     // registre 22 : Adresse Node
 
 
 
@@ -57,10 +57,11 @@ Param PARAMS[] = {
   {"CaSeuil", 71, U8, 0, 100, 30, 0,nullptr, &Capt_seuil_temp, 0},        // 0:pas de seuil(chaque lecture), 1:seuil 0,01°C, 30:0,3°C  
   {"CaNb", 72, U8, 1, 12, 2, 0,nullptr, &Capt_nb_val_max, 0},             // 0:inactif 1:à chaque lecture, 2:2val max
   {"CaTps", 73, U16, 10, 600, 300, 0,nullptr, &Capt_tps_total_max, 0},    // tps envoi max en minutes : 10min à 10h
-  {"DelD", 74, U8, 1, 60, 10, 0, nullptr, &delai_detection, 0},        // registre 14 : delai entre detections (s)
-  {"CalT", 75, U16, 1, 5000, 1000, 0, nullptr, &calib_temp, 0},        // registre 65 : calibration_temperature (0:pas de calibration, 1:calibration)
-  {"CalH30", 76, U16, 100, 500, 300, 0, nullptr, &calib_hygro1, 0},        // registre 66 : calibration_hygro30 (0:pas de calibration, 1:calibration)
-  {"CalH80", 77, U16, 600, 1000, 800, 0, nullptr, &calib_hygro2, 0},        // registre 67 : calibration_hygro80 (0:pas de calibration, 1:calibration)
+  {"DelD", 74, U8, 1, 60, 10, 0, nullptr, &delai_detection, 0},        // registre 74 : delai entre detections (s)
+  {"CalT", 75, U16, 1, 5000, 1000, 0, nullptr, &calib_temp, 0},        // registre 75 : calibration_temperature (0:pas de calibration, 1:calibration)
+  {"CalH30", 76, U16, 100, 500, 300, 0, nullptr, &calib_hygro1, 0},        // registre 76 : calibration_hygro30 (0:pas de calibration, 1:calibration)
+  {"CalH80", 77, U16, 600, 1000, 800, 0, nullptr, &calib_hygro2, 0},        // registre 77 : calibration_hygro80 (0:pas de calibration, 1:calibration)
+  {"Test", 78, U16, 0, 60000, 100, 0, nullptr, &val_test, 0},             // registre 78 : Valeur test, pour essais)
 
 };
 

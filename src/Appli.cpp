@@ -64,10 +64,8 @@ RTC_NOINIT_ATTR uint8_t delai_detection;
 RTC_NOINIT_ATTR uint8_t etat_ESP_stop;  // 0:normal 1:arrêté pour batterie faible (deepsleep longue duree)
 RTC_NOINIT_ATTR uint8_t cpt24h_batt;
 
+extern uint8_t My_statut; // 0:inconnu 1:veille 2:balise 3:tj actif
 
-volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
-volatile int ackChannel = -1;       // canal où ça a marché
-RTC_NOINIT_ATTR uint8_t num_sequentiel;  // pour Ack
 
 extern uint16_t nb_err_reseau;
 extern  uint16_t TextV, TintV, HumV, HAV;  // pour stockage dans la partition log_flashG
@@ -87,6 +85,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
 float absoluteHumidity(float temperature, float relativeHumidity);
+void traitement_message_recu(Message_Struct &msg);
 
 
 
@@ -138,6 +137,7 @@ void setup_0()
    BTN_PIN[0] = PIN_REVEIL;
    BTN_PIN[1] = PIN_REVEIL2;
 
+
   #ifdef ESP32_uPesy
     pinMode(PIN_Vbatt, INPUT);
   #endif
@@ -182,10 +182,10 @@ void setup_1()
 {
 
   // initialisation du node Gateway
-    if (log_detail>=2) Serial.printf("add_node Gateway \n\r");
+    if (log_detail>=2) Serial.printf("ajout node Gateway \n\r");
     Node[0].Add_node = SERVER_ADD;
     Node[0].nb_mess_recu = 0; // initialiser l'état du nœud
-    Node[0].statut = 0b11; // mode C (tj actif)
+    Node[0].Nstatut = 0b11; // mode C (tj actif)
     Node[0].dernier_timestamp_reçu = 0;
     Node[0].dernier_tick6s = 0;
     Node[0].offset_valide = false;
@@ -306,7 +306,7 @@ uint8_t setup_appli()
   if (!rtc_valid)  // initialisation si perte d'alim
   {
     last_wifi_channel = WIFI_CHANNEL;  // prochain canal WiFi à utiliser après perte d'alim
-    Serial.printf("Prochain canal WiFi à utiliser après perte d'alim: %d\n\r", last_wifi_channel);
+    Serial.printf("Prochain canal WiFi a utiliser apres perte d'alim: %d\n\r", last_wifi_channel);
   }
   
   // -------------  Capteur/Detecteur : stockage ou envoie infos à la gateway -------------------
@@ -320,20 +320,38 @@ uint8_t setup_appli()
     passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
   }
   else 
-  {
-    if (type_reveil == 1)  {
-      event_cycle(); // réveil par timer
+  {    
+    if (type_reveil == 4)    // BTN => type_reveil=4
+    {  
+      delay(100);  // délai pour différencier appui court de appui long
+      uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 0, appui => 1
+      if (log_detail>=1)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
+      if (etat_BTN0)  // BTN encore appuyé
+      {
+        continue_setup=1;
+        My_statut = 3;
+      }
+      else 
+      {
+        continue_setup=0;
+      }
+    }
+    else continue_setup=0;
+
+
+    if (type_reveil == 1)    // reveil par timer
+    {
+      event_cycle(); // 
       continue_setup=0;  // ne continue pas le setup après réveil par timer
     }
-    else 
+    else // BTN ou power on
     {
       if (log_detail>=2) Serial.printf("milli H1: %lu\n\r", millis());
       envoi_temp_hygro();  // 30ms
        if (log_detail>=2) Serial.printf("milli H3: %lu\n\r", millis());
     }
-    uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 0, appui => 1
-    if (log_detail>=2)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
-    if ((type_reveil != 4) || (!etat_BTN0))  // reveil par BTN0 encore appuyé => pas sleep
+    
+    if (!continue_setup)  
     {
       if (gatewayQueueTimer != NULL && xTimerIsTimerActive(gatewayQueueTimer) != pdFALSE)
       {
@@ -493,11 +511,13 @@ void enreg_24h( uint8_t veille)
   // Tick, Temp, Hum, Vbatt
   if (action_envoi && esp_now_actif)
   {
-    Message_EspNow message;
+    Message_Struct message;
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-    message.emetteur = add_node;
+    message.emetteur = My_Address;
     message.statut = 0b01;  // mode veille
+    if (My_statut == 3)  message.statut = 0b11; // mode actif
+    message.statut &= 0b10111;  // Ack demandé bit3=0;
     num_sequentiel++;
     message.num_seq = num_sequentiel;
     message.code = 'C';
@@ -885,11 +905,12 @@ uint8_t enreg_valeur()
   if (envoi)
   {
     //Serial.printf("Envoi BBB %d valeurs Temp-HR-Ecart\n\r", cpt_nb_val);
-    Message_EspNow message;
+    Message_Struct message;
 
     message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-    message.emetteur = add_node;
+    message.emetteur = My_Address;
     message.statut = 0b01;  // mode veille
+    if (My_statut == 3)  message.statut = 0b11; // mode actif
     num_sequentiel++;
     message.num_seq = num_sequentiel;
     message.code = 'C';
@@ -941,11 +962,12 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA, float vbatt)
 {
   if (!esp_now_actif) return 0;
 
-  Message_EspNow message;
+  Message_Struct message;
 
   message.destinataire = SERVER_ADD | 0x80;  // 0x80 = message hexa
-  message.emetteur = add_node;
+  message.emetteur = My_Address;
   message.statut = 0b01;  // mode veille
+  if (My_statut == 3)  message.statut = 0b11; // mode actif
   num_sequentiel++;
   message.num_seq = num_sequentiel;
   message.code = 'C';
@@ -1169,15 +1191,36 @@ float readBatteryVoltage() {
 2:Etat BTN0: 0  type_reveil:1
 2:Le timer Envoi_now tourne encore => pas de veille */
 
-void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-//void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len) {
+void traitement_message_recu_appli(Message_Struct &msg)
+{
+  uint8_t mess_valid=0;
+
+  Serial.printf("code1: %i code2:%i\n\r", msg.code, msg.code2);
+
+  if (!mess_valid)
+  {
+    if (log_detail >=3) Serial.println("message pas valide");
+  }
+
+  if (!(msg.statut & 0b1000)) // demande d'ack => envoi ack
+  {
+    envoi_ack(msg);
+  }
+}
+
+
+void traitement_espnow_recv(EspNowRecvMsg_t &recv) {
+  Message_Struct &msg = recv.msg;
+  int len = recv.len;
+  uint8_t *src_addr = recv.src_addr;
+
   // 🔍 DIAGNOSTIC: Afficher infos de réception
+  if (log_detail >=1)  Serial.println("\n📥 ========== RECEPTION ESP-NOW ==========");
   if (log_detail>=3) 
   {
-    Serial.println("\n📥 ========== RECEPTION ESP-NOW OnDataRecv=======");
     Serial.printf("   Adresse MAC source: ");
     for (int i = 0; i < 6; i++) {
-      Serial.printf("%02X", info->src_addr[i]);
+      Serial.printf("%02X", src_addr[i]);
       if (i < 5) Serial.print(":");
     }
     Serial.println();
@@ -1190,60 +1233,31 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (log_detail>=4) Serial.printf("   Canal WiFi actuel: %d\n\r", current_channel);
   if (log_detail>=3)Serial.printf("   Taille recue: %d octets\n\r", len);
   
-  if (len > sizeof(Message_EspNow)) {
+  if (len > sizeof(Message_Struct)) {
     Serial.println("⚠️ message trop long");
     return;
   }
-  Message_EspNow msg;
-  memcpy(&msg, data, sizeof(msg));
+  num_sequentiel = msg.num_seq;
   uint8_t renvoi_ack=0;
 
-  if (log_detail>=3)
+  if (log_detail>=1)
   {
-    Serial.printf("   Donnees reçues: ");
-    for (uint8_t i = 0; i < len; i++) Serial.printf("%02X ", data[i]);
+    Serial.printf("   Donnees recues: ");
+    for (uint8_t i = 0; i < len; i++) Serial.printf("%02X ", ((uint8_t*)&msg)[i]);
     Serial.println();
   }
-  if ((msg.destinataire & 0x7F) == add_node)
+  if ((msg.destinataire & 0x7F) == My_Address)
   {
     if (log_detail>=3) Serial.printf("Message de gateway node:%c\n\r", msg.emetteur);
     if ((msg.emetteur & 0x7F) == SERVER_ADD)
     {
-      if (msg.code == 'A')
-      {
-        if (log_detail>=3) Serial.println("Ack recu");
-        if (ackExpectedSequence == msg.num_seq)
-        {
-          if (log_detail>=2) Serial.println("Ack recu correct");
-          ackReceived = true;
-        }
-        else
-        {
-          Serial.println("Numéro d'Ack incorrect");
-        }
-      }
+      traitement_message_recu(msg);
     }
   }
 }
 
-void traitement_espnow_recv(EspNowRecvMsg_t &recv) {
-  Message_EspNow &msg = recv.msg;
-  int len = recv.len;
-  uint8_t *src_addr = recv.src_addr;
 
-  // 🔍 DIAGNOSTIC: Afficher infos de réception
-  if (log_detail>=2) 
-  {
-    Serial.println("\n📥 ========== RECEPTION ESP-NOW ==========");
-    for (int i = 0; i < 6; i++) {
-      Serial.printf("%02X", src_addr[i]);
-      if (i < 5) Serial.print(":");
-    }
-    Serial.println();
-  }
-}
-
-static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
+/*static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_Struct * message)
 {
   uint8_t result = false;
 
@@ -1266,7 +1280,7 @@ static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo,
     esp_err_t get_channel_err = esp_wifi_get_channel(&actual_channel, &second);
     if (err != ESP_OK || get_channel_err != ESP_OK || actual_channel != channel)
     {
-      Serial.printf("⚠️ Echec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
+      Serial.printf("⚠️ Echec changement canal (demande:%d, actuel:%d, erreur:%s)\n\r",
                     channel, actual_channel,
                     esp_err_to_name(err != ESP_OK ? err : get_channel_err));
       return false;
@@ -1282,13 +1296,13 @@ static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo,
     if (esp_now_add_peer(peerInfo) != ESP_OK){
       Serial.println("❌ Échec ajout peer");
     }
-    Serial.printf("STA non connecté : channel actuel: %d\n\r", actual_channel);
+    Serial.printf("STA non connecte : channel actuel: %d\n\r", actual_channel);
   }
   else {
     // Une STA connectée reste sur le canal de l'AP
     actual_channel = WiFi.channel();
     peerInfo->channel = 0;  // canal Wi-Fi courant
-    Serial.printf("STA connecté : channel actuel: %d\n\r", actual_channel);
+    Serial.printf("STA connecte : channel actuel: %d\n\r", actual_channel);
   }
   
   if (!esp_now_is_peer_exist(mac_gw))
@@ -1340,4 +1354,4 @@ static uint8_t envoi_now_legacy(uint8_t channel, esp_now_peer_info_t * peerInfo,
   else Serial.println("❌ Echec d'envoi");
 
   return result;
-}
+}*/

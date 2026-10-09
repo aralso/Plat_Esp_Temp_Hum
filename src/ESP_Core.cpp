@@ -27,6 +27,14 @@ Configuration des options de programmation :
 - upload mode: Uart0
 - usb mode : hardware cdc & jtag (usage basique)
 - partition : custom (pour permettre code>1,5MOctets)
+
+Messages recus : 
+A:action
+V0/1x : pour node : reveil periodique chaque x secondes 
+V2 : pour gateway : message periodique suite a reveil
+K:accusé reception
+1à5 : valeurs eeprom
+
 */
 
 
@@ -123,8 +131,10 @@ uint8_t sdcard_ok;
 RTC_NOINIT_ATTR S_Node Node[NB_CAPT];
 
 uint8_t init_masquage=1;
-RTC_NOINIT_ATTR uint8_t add_node;
 RTC_NOINIT_ATTR uint8_t vit_cpu;
+
+uint8_t My_statut; // 0:inconnu 1:veille 2:balise 3:tj actif
+RTC_NOINIT_ATTR uint16_t val_test;  // valeur test, pour essais
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
@@ -133,8 +143,8 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status);
 #endif
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
-uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node);
-uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow *message);
+uint8_t envoi_data(Message_Struct mess_esp, uint8_t node);
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_Struct *message);
 uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node);
 void vTimerGatewayQueueCallback(TimerHandle_t xTimer);
 uint8_t parseMacString(const char* str, uint8_t mac[6]);
@@ -147,11 +157,18 @@ void setup_3();
 void setupRoutes_appli();
 uint8_t connectWiFiWithDiagnostic();
 void traitement_recalage_espnow(uint8_t node);
+void traitement_message_recu_appli(Message_Struct &msg);
+void traitement_reveil_periodique();
 
 // variable globale de 4000c en RAM pour dump log et autres requetes
 char buffer_dmp[MAX_DUMP];  // max 250 logs, 16 octets chacun
 volatile uint8_t ackExpectedSequence = 0;
 
+volatile uint8_t ackReceived = false;  // global pour indiquer que le peer a acké
+volatile int ackChannel = -1;       // canal où ça a marché
+RTC_NOINIT_ATTR uint8_t num_sequentiel;  // pour Ack
+int8_t last_rssi;
+uint8_t esp_initialise=0;  // flag pour indiquer si ESP-NOW a été initialisé
 
 #ifdef MODE_Wifi
   #include <AsyncTCP.h>
@@ -219,6 +236,7 @@ RTC_NOINIT_ATTR uint8_t mode_reseau=13;  //  0:pas de reseau 11:wifi_AP_usine  1
   mode_reseau=0;
 #endif
 
+RTC_NOINIT_ATTR uint8_t My_Address;
 RTC_NOINIT_ATTR char nom_routeur[16]="";
 RTC_NOINIT_ATTR char mdp_routeur[25]="";
 RTC_NOINIT_ATTR char mac_gw_str[20]=""; // 34:34:23:23:23:12
@@ -229,6 +247,7 @@ RTC_NOINIT_ATTR uint8_t mac_gw[6];   // B0:CB:D8:E9:0C:74  adresse mac esp_dest
 unsigned long last_remote_Tint_time = 0, last_remote_Text_time=0, last_remote_heure_time=0;
 
 RTC_NOINIT_ATTR int16_t  graphique [NB_Val_Graph][NB_Graphique];
+RTC_NOINIT_ATTR uint16_t reveil_periodique;
 
 // Status
 RTC_NOINIT_ATTR uint32_t rtc_magic = 0xDEADBEEF;
@@ -320,14 +339,14 @@ static uint8_t node_buffer_read(uint8_t node, size_t offset)
   return Node[node].queue_tx[(Node[node].head + offset) % NB_OCTETS_NODE_TX];
 }
 
-static void node_buffer_read_message(uint8_t node, Message_EspNow *message,
+static void node_buffer_read_message(uint8_t node, Message_Struct *message,
                                      uint8_t messageSize)
 {
   for (uint8_t i = 0; i < messageSize; ++i)
     reinterpret_cast<uint8_t *>(message)[i] = node_buffer_read(node, i + 1);
 }
 
-static void node_buffer_write_message(uint8_t node, const Message_EspNow *message,
+static void node_buffer_write_message(uint8_t node, const Message_Struct *message,
                                       uint8_t messageSize)
 {
   if (log_detail>=4) Serial.printf("tail avant: %d\n\r", Node[node].tail);
@@ -440,6 +459,7 @@ TimerHandle_t xTimer_24H;
 TimerHandle_t xTimer_Cycle;
 //TimerHandle_t xTimer_Compresseur;
 TimerHandle_t xTimer_Securite;
+TimerHandle_t xTimer_ReveilPeriodique;
 
 
 
@@ -714,7 +734,15 @@ void vTimerGatewayQueueCallback(TimerHandle_t xTimer)
     }
 }
 
-
+void vTimerRevPerCallback(TimerHandle_t xTimer)
+{
+  systeme_eve_t evt = { EVENT_REVEIL_PERIODIQUE, 0};
+  if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
+    {
+      if (erreur_queue<5) num_err_queue[erreur_queue]=5;
+      erreur_queue++;
+    }
+}
 
 
 // timer debounce pour lire toutes les entrées
@@ -954,6 +982,9 @@ void taskHandler(void *parameter) {
                   traitement_recalage_espnow((uint8_t)evt.data);
                   break;
 
+                case EVENT_REVEIL_PERIODIQUE:
+                  traitement_reveil_periodique();
+                  break;
                 case EVENT_GATEWAY_QUEUE:
                   traitement_queue_data_gateway(1, static_cast<uint8_t>(evt.data));
                   break;
@@ -1127,7 +1158,7 @@ void taskHandler(void *parameter) {
     } // fin du while
 }
 
-// init des variables RTC, lors d'un cold Reset
+// initialisation des variables RTC, lors d'un cold Reset
 void init_rtc_variables()
 {
   etat_now=0;
@@ -1152,6 +1183,7 @@ void init_rtc_variables()
   HumV=0;
   HAV=0; 
   vit_cpu = 240;
+  reveil_periodique=0;
   init_rtc_variables_appli();
 }
 
@@ -1580,7 +1612,11 @@ void setup()
 
   if (log_detail>=2) Serial.printf("**** Initialisation - reset: %s  type_rev:%i Sleep:%i rtc:%i\n\r",resetREASON0, type_reveil, wakeup_reason, rtc_valid );
 
-  
+  My_statut = 3; // initialisation du statut du node
+  #ifdef ESP_VEILLE
+    My_statut = 1;
+  #endif
+
   setup_0();   //  --- valeur initiales des PIN et graphiques
 
   // ---------  Configuration des PIN Entrees/sorties       -------------------------------
@@ -1621,7 +1657,7 @@ void setup()
     for (uint8_t node = 0; node < NB_CAPT; ++node)
     {
       gatewayQueueTimer[node] = xTimerCreate(
-          "GatewayQueue", pdMS_TO_TICKS(500), pdFALSE,
+          "GatewayQueue", pdMS_TO_TICKS(val_test), pdFALSE,
           reinterpret_cast<void *>(static_cast<uintptr_t>(node)),
           vTimerGatewayQueueCallback);
       if (gatewayQueueTimer[node] == NULL)
@@ -1758,7 +1794,7 @@ void setup()
       }
     }*/
   }
-  if (log_detail>=3) Serial.printf("milli F: %lu\n\r", millis());
+  if (log_detail>=2) Serial.printf("milli F: %lu\n\r", millis());
 
   setup_1();  // --------------   initialisation sonde temperature--10ms----------
 
@@ -1775,7 +1811,7 @@ void setup()
 
 
     if (!logPartition) {
-      Serial.println("Partition 'log_flash' non trouvée !");
+      Serial.println("Partition 'log_flash' non trouvee !");
       log_err=1;
     }
     else
@@ -1783,7 +1819,7 @@ void setup()
       log_err=0; // ok
       if (log_detail>=4) 
       {
-        Serial.println("Partition 'log_flash' trouvée.");
+        Serial.println("Partition 'log_flash' trouvee.");
         delay(500 + random(1, 1001) );
       }
 
@@ -1802,13 +1838,13 @@ void setup()
     logPartitionG = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x98, "log_flashG");
 
     if (!logPartitionG) {
-      Serial.println("Partition 'log_flash_G' non trouvée !");
+      Serial.println("Partition 'log_flash_G' non trouvee !");
       log_errG=1;
     }
     else
     {
       log_errG=0;
-      if (log_detail>=4) Serial.println("Partition 'log_flash_G' trouvée.");
+      if (log_detail>=4) Serial.println("Partition 'log_flash_G' trouvee.");
     }
     if (log_detail>=2) Serial.printf("milli H: %lu\n\r", millis());
 
@@ -1816,15 +1852,15 @@ void setup()
 
     // Timer à l'initialisation pour masquer 10 secondes  init heure, puis 30 sec
     xTimer_Init= xTimerCreate ("Init", (uint32_t)attente_init*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerInitCallback);
-    if (xTimer_Init == NULL)  Serial.println("Erreur : timer xTimer_Init non créé !");
+    if (xTimer_Init == NULL)  Serial.println("Erreur : timer xTimer_Init non cree !");
 
     // Timer chaque 3 minutes pour test wifi
     xTimer_3min= xTimerCreate ("3min", (uint32_t)3*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer3minCallback);
-    if (xTimer_3min == NULL)  Serial.println("Erreur : timer xTimer_3min non créé !");
+    if (xTimer_3min == NULL)  Serial.println("Erreur : timer xTimer_3min non cree !");
 
     // Timer chaque 24heures
     xTimer_24H= xTimerCreate ("24H", (uint32_t)24*60*60*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimer24HCallback);
-    if (xTimer_24H == NULL)  Serial.println("Erreur : timer xTimer_24h non créé !");
+    if (xTimer_24H == NULL)  Serial.println("Erreur : timer xTimer_24h non cree !");
 
 
 
@@ -1832,20 +1868,24 @@ void setup()
     uint16_t perio = periode_cycle*60;  // minutes -> secondes
     if (mode_rapide==12) perio = periode_cycle;   // en secondes
     xTimer_Cycle= xTimerCreate ("Cycle", (uint32_t)perio*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerCycleCallback);
-    if (xTimer_Cycle == NULL)  Serial.println("Erreur : timer xTimer_cycle non créé !");
+    if (xTimer_Cycle == NULL)  Serial.println("Erreur : timer xTimer_cycle non cree !");
 
 
     // Timer de Délai pour fin de modifs autorisée (securité) : 15 minutes
     xTimer_Securite= xTimerCreate ("Securite",15*60*(1000/portTICK_PERIOD_MS), pdFALSE, (void *) 0, vTimerSecuriteCallback);
-    if (xTimer_Securite == NULL)  Serial.println("Erreur : timer xTimer_Securite non créé !");
+    if (xTimer_Securite == NULL)  Serial.println("Erreur : timer xTimer_Securite non cree !");
 
     // Timer de Délai pour websocket
     xTimer_Websocket= xTimerCreate ("Websocket", (uint32_t)DelaiWebsocket*(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWebsocketCallback);
-    if (xTimer_Websocket == NULL)  Serial.println("Erreur : timer xTimer_Websocket non créé !");
+    if (xTimer_Websocket == NULL)  Serial.println("Erreur : timer xTimer_Websocket non cree !");
 
     // Timer de Délai pour watchdog : 13 sec
     xTimer_Watchdog= xTimerCreate ("Watchdog", (uint32_t)WDT_TIMEOUT*(300/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerWatchdogCallback);
-    if (xTimer_Watchdog == NULL)  Serial.println("Erreur : timer xTimer_Watchdog non créé !");
+    if (xTimer_Watchdog == NULL)  Serial.println("Erreur : timer xTimer_Watchdog non cree !");
+
+        // Timer de Délai pour watchdog : 13 sec
+    xTimer_ReveilPeriodique= xTimerCreate ("VeillePer", (uint32_t)(1000/portTICK_PERIOD_MS), pdTRUE, (void *) 0, vTimerRevPerCallback);
+    if (xTimer_ReveilPeriodique == NULL)  Serial.println("Erreur : timer xTimer_Reveil Periodique non cree !");
 
 
 
@@ -1861,6 +1901,13 @@ void setup()
     xTimerStart(xTimer_Init,100);
     xTimerStart(xTimer_24H,100);
     xTimerStart(xTimer_Cycle,100);
+
+    if (!reveil_periodique>=10 && reveil_periodique <=600)  // periode entre 10 secondes et 10 minutes
+    {
+        xTimerChangePeriod(xTimer_ReveilPeriodique, reveil_periodique*(1000/portTICK_PERIOD_MS),100); 
+        xTimerStart(xTimer_ReveilPeriodique,100);
+    }
+
     //xTimerStart(xTimer_Compresseur,100);
 
     if (boot_rapide < 3) delay(1000); // Attente 4 sec pour que les boutons se stabilisent
@@ -1882,6 +1929,7 @@ void setup()
 
     // -------------------- demarrage du reseau  ------------------
 
+    
     if (log_detail>=4) Serial.printf("mode reseau avant wifi:%i\n\r", mode_reseau);
 
     #ifndef NO_RESEAU 
@@ -1992,6 +2040,7 @@ void setup()
     if (boot_rapide < 1) delay(100);
 
 
+    
     // ------- changement de frequence CPU -------------------
 
     uint16_t Cpu_freq = getCpuFrequencyMhz();
@@ -2015,6 +2064,7 @@ void setup()
 
     // ------------  Configuration OTA -----------------
 
+    
     #ifdef OTA
       ArduinoOTA.setHostname("ESP32_Tempa");
       ArduinoOTA.setPassword("Corail2025");
@@ -2062,6 +2112,7 @@ void setup()
     #endif  // fin OTA
 
 
+    
     #ifdef SDCARD
       if (!sd_init()) sdcard_ok=1;
     #endif
@@ -2743,11 +2794,119 @@ uint8_t requete_Get_String (uint8_t type, String var, char *valeur)
   return (res+res2-1);
 }
 
+// fournit l'identifiant du node et l'ajoute si nécessaire
+// 0:node trouvé
+// 1:échec
+// 2:nouveau node ajouté
+uint8_t conversion_node(uint8_t emetteur, uint8_t *node)
+{
+  // Implémentation de la conversion du nœud
+  for (uint8_t i = 0; i < NB_CAPT; i++) {
+    if (Node[i].Add_node == emetteur) {
+      *node = i;
+      if (log_detail>=3) Serial.printf("Node %c trouve a l'index %d\n\r", emetteur, i);
+      return 0; // Succès
+    }
+  }
+  // verif s'il reste des places vides pour de nouveaux nodes
+  for (uint8_t i = 0; i < NB_CAPT; i++) {
+    if (log_detail>=2) Serial.printf("Node[%d] = %02X\n\r", i, Node[i].Add_node);
+    if (Node[i].Add_node == 0) { // place vide
+      Node[i].Add_node = emetteur;
+      *node = i;
+      Node[i].nb_mess_recu = 0; // initialiser l'état du nœud
+      Node[i].Nstatut = 0b01; // mode A (veille)
+      Node[i].dernier_timestamp_reçu = 0;
+      Node[i].dernier_tick6s = 0;
+      Node[i].offset_valide = false;
+      Node[i].num_sequentiel =0;
+      Node[i].head = 0;
+      Node[i].tail = 0;
+      return 2; // Succès
+    }
+  } 
+  return 1; // Échec
+}
+
+// fournit l'identifiant du node s'il existe
+// 0:node trouvé
+// 1:échec
+uint8_t ident_node(uint8_t emetteur, uint8_t *node)
+{
+  // Implémentation de la conversion du nœud
+  for (uint8_t i = 0; i < NB_CAPT; i++) {
+    if (Node[i].Add_node == emetteur) {
+      *node = i;
+      if (log_detail>=3) Serial.printf("Node %c trouve a l'index %d\n\r", emetteur, i);
+      return 0; // Succès
+    }
+  }
+  return 1; // Échec
+}
+
+// structure le message et l'envoie
+uint8_t envoi_mess_esp(const char *data)
+{
+
+  if (data == nullptr) return 1;   // pas de message
+
+  size_t textLength = strlen(data);
+  if (textLength >= MAX_PAYLOAD+3 || textLength < 3) return 1;  // message  trop court
+
+  if (log_detail>=2)
+  {
+    Serial.printf("Envoi:");
+    for (uint8_t i=0; i<textLength; i++)
+    {
+      Serial.printf("%02X ", data[i]);
+    }
+    Serial.printf("\n\r");
+  }
+
+  uint8_t node = 0;
+
+  if (conversion_node(static_cast<uint8_t>(data[0]), &node) != 0)   // node pas actif
+        return 1;
+
+  uint8_t payloadLength = (uint8_t)textLength - 3;
+
+  if (payloadLength >= MAX_PAYLOAD)  return 1; // message trop long
+
+    Message_Struct message = {};
+    message.destinataire = static_cast<uint8_t>(data[0]) | 0x80;
+    message.emetteur = My_Address;
+    message.longueur = static_cast<uint8_t>( textLength)+1;
+    message.statut = 0b01;  // bit 0-1 : mode du nœud veille
+    if (My_statut == 3)  message.statut = 0b11; // mode actif
+
+    message.statut |= 0b01000; // bit 3 à 1 : pas d'ack
+    Node[node].num_sequentiel++;
+    message.num_seq = Node[node].num_sequentiel;
+    message.code = static_cast<uint8_t>(data[1]);
+    message.code2 = static_cast<uint8_t>(data[2]);
+    memcpy(message.payload, data +3, textLength-3);
+
+    envoi_data(message, node);
+    return 0;
+}
+
 // execution d'une action avec une valeur - type 5
 uint8_t requete_Set_Action(const char *reg, const char *data)
 {
   uint8_t res = 1;
   uint8_t res2 = 1;
+
+  if (strcmp(reg, "MSG") == 0)
+  {
+    if (data == nullptr || data[0] == '\0')
+      return 2;
+
+    const size_t textLength = strlen(data);
+    if (textLength > MAX_PAYLOAD)
+      return 2;
+
+    envoi_mess_esp(data);
+  }
 
     // affichage des log
     if (strcmp(reg, "LOG") == 0) 
@@ -3438,6 +3597,10 @@ uint8_t requete_SetReg(int param, float valeurf, uint8_t secu)
         otaStartTime = millis();
       }
     }
+    if (param == 22)  // registre 22 : adresse Node
+    {
+      reset_node_buffer(0);  // évite de conserver des messages avec l'ancienne adresse Node
+    }
     if (param == 43)  // registre 43 : puissance d'emission wifi
     {
       if ((valeur >= -12) && (valeur <= 20))  // entre -12dBm et +20dBm
@@ -3844,9 +4007,9 @@ void recep_message(char *messa) // recept_uart
       }
       if (!err)  // pas d'erreur
       {
-        Serial.printf("Action:%s %s\n\r", reg, data);
+        if (log_detail>=4) Serial.printf("Action:%s %s\n\r", reg, data);
         res = requete_Set_Action(reg, data);     
-        Serial.printf(" %s\n\r", buffer_dmp);
+        if (log_detail>=4) Serial.printf(" %s\n\r", buffer_dmp);
       }
   }
   else  // message type 1 à 4
@@ -4674,11 +4837,11 @@ uint8_t reConnectWifi()
   WiFi.begin(nom_routeur, mdp_routeur);
 
   unsigned long start = millis();
-  const unsigned long timeout = 15000; // 15 secondes max
+  const unsigned long timeout = 1000; // 1,1 secondes max
 
   while (WiFi.status() != WL_CONNECTED && millis() - start < timeout)
   {
-    delay(500);
+    delay(200);
     Serial.print(".");
     
     // Reset du watchdog pendant la reconnexion WiFi
@@ -5110,52 +5273,52 @@ void diagnoseWiFiError() {
   Serial.println(")");
   
   // 4. Informations sur les réseaux disponibles
-  Serial.println("4. Réseaux WiFi disponibles :");
+  Serial.println("4. Reseaux WiFi disponibles :");
   int n = WiFi.scanNetworks();
   if (n == 0) {
-    Serial.println("   Aucun réseau trouvé");
+    Serial.println("   Aucun réseau trouve");
   } else {
-    Serial.printf("   %d réseaux trouvés:\n\r", n);
+    Serial.printf("   %d réseaux trouves:\n\r", n);
     for (int i = 0; i < min(n, 5); ++i) { // Affiche seulement les 5 premiers
       Serial.printf("   - %s (RSSI: %ld, Ch: %ld, %s)\n\r", 
         WiFi.SSID(i).c_str(), 
         WiFi.RSSI(i), 
         WiFi.channel(i),
-        (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Ouvert" : "Sécurisé");
+        (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Ouvert" : "Securise");
     }
   }
   
   // 5. Diagnostic des erreurs courantes
   Serial.println("5. Diagnostic des erreurs :");
   if (strlen(nom_routeur) == 0) {
-    Serial.println("   ❌ ERREUR: SSID non configuré");
+    Serial.println("   ❌ ERREUR: SSID non configure");
   }
   if (strlen(mdp_routeur) == 0) {
-    Serial.println("   ❌ ERREUR: Mot de passe non configuré");
+    Serial.println("   ❌ ERREUR: Mot de passe non configure");
   }
   if (status == WL_NO_SSID_AVAIL) {
-    Serial.println("   ❌ ERREUR: SSID non trouvé dans la zone");
+    Serial.println("   ❌ ERREUR: SSID non trouve dans la zone");
   }
   if (status == WL_CONNECT_FAILED) {
-    Serial.println("   ❌ ERREUR: Échec de connexion (mot de passe incorrect ?)");
+    Serial.println("   ❌ ERREUR: Echec de connexion (mot de passe incorrect ?)");
   }
   if (status == WL_CONNECTION_LOST) {
     Serial.println("   ❌ ERREUR: Connexion perdue");
   }
   if (local_ip[0] == 0) {
-    Serial.println("   ⚠️  ATTENTION: Configuration IP non définie");
+    Serial.println("   ⚠️  ATTENTION: Configuration IP non definie");
   }
   
   // 6. Recommandations
   Serial.println("6. Recommandations :");
   if (status == WL_NO_SSID_AVAIL) {
-    Serial.println("   - Vérifiez que le SSID est correct");
-    Serial.println("   - Vérifiez que le routeur WiFi est allumé");
-    Serial.println("   - Vérifiez la portée du signal WiFi");
+    Serial.println("   - Verifiez que le SSID est correct");
+    Serial.println("   - VVerifiez que le routeur WiFi est allume");
+    Serial.println("   - VVerifiez la portee du signal WiFi");
   }
   if (status == WL_CONNECT_FAILED) {
-    Serial.println("   - Vérifiez le mot de passe WiFi");
-    Serial.println("   - Vérifiez le type de sécurité (WPA/WPA2/WEP)");
+    Serial.println("   - VVerifiez le mot de passe WiFi");
+    Serial.println("   - VVerifiez le type de securite (WPA/WPA2/WEP)");
   }
   if (local_ip[0] == 0) {
     Serial.println("   - Configurez une adresse IP statique");
@@ -5170,11 +5333,11 @@ uint8_t connectWiFiWithDiagnostic() {
   
   // Vérifications préliminaires
   if (strlen(nom_routeur) == 0) {
-    Serial.println("❌ ERREUR: SSID non configuré");
+    Serial.println("❌ ERREUR: SSID non configure");
     return 1;
   }
   
-  if (log_detail>=3) Serial.printf("Connexion au réseau: %s\n\r", nom_routeur);
+  if (log_detail>=3) Serial.printf("Connexion au reseau: %s\n\r", nom_routeur);
     // Configuration WiFi en mode Station pour ESP-NOW
     WiFi.mode(WIFI_STA); 
     
@@ -5188,7 +5351,7 @@ uint8_t connectWiFiWithDiagnostic() {
 
       if (log_detail>=3) Serial.printf("Configuration IP statique: %s\n\r", ipLocal.toString().c_str());
       if (!WiFi.config(ipLocal, ipGateway, ipSubnet, ipPrimaryDNS, ipSecondaryDNS)) {
-      Serial.println("❌ ERREUR: Échec de configuration IP statique");
+      Serial.println("❌ ERREUR: Echec de configuration IP statique");
       return 2;
     }
   } else {
@@ -5201,7 +5364,7 @@ uint8_t connectWiFiWithDiagnostic() {
   
   // Attente de connexion avec feedback
   unsigned long startTime = millis();
-  const unsigned long timeout = 15000; // 15 secondes max
+  const unsigned long timeout = 1100; // 1,1 secondes max
   int dots = 0;
   
   while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < timeout) {
@@ -5219,7 +5382,7 @@ uint8_t connectWiFiWithDiagnostic() {
   // Vérification du résultat
   if (WiFi.status() == WL_CONNECTED) {
     if (log_detail>=4) {
-      Serial.println("✅ WiFi connecté avec succès !");
+      Serial.println("✅ WiFi connecte avec succes !");
       Serial.printf("   - Canal: %ld\n\r", WiFi.channel());
       Serial.printf("   - Masque: %s\n\r", WiFi.subnetMask().toString().c_str());
       Serial.printf("   - Gateway: %s\n\r", WiFi.gatewayIP().toString().c_str());
@@ -5234,7 +5397,7 @@ uint8_t connectWiFiWithDiagnostic() {
     return 0;
 
      } else {
-    Serial.println("❌ ÉCHEC de connexion WiFi");
+    Serial.println("❌ ECHEC de connexion WiFi");
     diagnoseWiFiError();
     return 3;
   }
@@ -5246,11 +5409,11 @@ uint8_t connectWiFiRapide()
 {  
   // Vérifications préliminaires
   if (strlen(nom_routeur) == 0) {
-    Serial.println("❌ ERREUR: SSID non configuré");
+    Serial.println("❌ ERREUR: SSID non configure");
     return 1;
   }
   
-  if (log_detail>=3) Serial.printf("Connexion au réseau: %s\n\r", nom_routeur);
+  if (log_detail>=3) Serial.printf("Connexion au reseau: %s\n\r", nom_routeur);
     // Configuration WiFi en mode Station pour ESP-NOW
     WiFi.mode(WIFI_STA); 
     
@@ -5326,7 +5489,7 @@ uint16_t decod_asc16 (uint8_t * index)
 	return val;
 }
 
-static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp, uint8_t node)
+static uint8_t envoyer_data_gateway_direct(Message_Struct *mess_esp, uint8_t node)
 {
   if (node < NB_CAPT &&
       (Node[node].mac_node[0] || Node[node].mac_node[3] ||
@@ -5339,14 +5502,19 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp, uint8_t nod
       if (log_detail >= 4) Serial.println("WiFi mode set to STA for ESP-NOW");
     }
 
-    if (esp_now_init() != ESP_OK)
+    if (!esp_initialise)
     {
-      Serial.println("Error initializing ESP-NOW");
-      ESP.restart();
-    }
+      Serial.println("Initializing ESP-NOW");
+      if (esp_now_init() != ESP_OK)
+      {
+        Serial.println("Error initializing ESP-NOW");
+        ESP.restart();
+      }
 
-    esp_now_register_send_cb(OnDataSent);
-    esp_now_register_recv_cb(OnDataRecv);
+      esp_now_register_send_cb(OnDataSent);
+      esp_now_register_recv_cb(OnDataRecv);
+      esp_initialise = true;
+    }
 
     esp_now_peer_info_t peerInfo;
     memset(&peerInfo, 0, sizeof(peerInfo));
@@ -5355,10 +5523,11 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp, uint8_t nod
     peerInfo.encrypt = false;
     peerInfo.ifidx = WIFI_IF_STA;
 
-    if (log_detail >= 4) Serial.printf("🔍 Esp_now canal %d)\n\r", last_wifi_channel);
     uint8_t deliverySuccess = false;
     uint8_t current_channel;
     if (!last_wifi_channel || last_wifi_channel > 13) last_wifi_channel = 1;
+
+    if (log_detail>=3) Serial.printf("etat_now initial: %i, last_wifi_channel initial: %i\n\r", etat_now, last_wifi_channel);
 
     if (etat_now == 0)  // etat précédent : initial (non encore tenté)
     {
@@ -5422,6 +5591,7 @@ static uint8_t envoyer_data_gateway_direct(Message_EspNow *mess_esp, uint8_t nod
 
 // appel par le sequenceur pour envoyer 1 message dans la queue.
 // appel direct pour envoyer le dernier message de la queue.
+// return : 0:parti 1a2:erreur
 uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
 {
   uint8_t result = 0;
@@ -5438,7 +5608,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
     return result;
   }
 
-  Message_EspNow message;
+  Message_Struct message;
   uint8_t messageSize = 0;
   bool hasMessage = false;
 
@@ -5466,15 +5636,16 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
 
   if (hasMessage && result == 0)
   {
+    if (log_detail>=4)  Serial.printf("Message statut avant1  : %u\n\r", message.statut);
     if (log_detail>=4) Serial.printf("Node buffer used: %u, messageSize: %u\n\r", node_buffer_used(node), messageSize);
-    if (node_buffer_used(node) != messageSize+1) message.statut = (message.statut | 0b100);
+    if (node_buffer_used(node) == messageSize+1) message.statut = (message.statut | 0b100);
     if (log_detail>=4)  Serial.printf("Message statut apres: %u\n\r", message.statut);
     result = envoyer_data_gateway_direct(&message, node);
     if (log_detail >= 3)
       Serial.printf("Message envoye : result=%d, longueur=%d\n\r",
                     result, message.longueur);
     if (result != 0)
-      Serial.printf("Message conserve dans le buffer gateway : result=%d\n\r",
+      Serial.printf("Message conserve dans le buffer  : result=%d\n\r",
                     result);
 
     if (result == 0 &&
@@ -5515,14 +5686,14 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
     }
     else // plus de message à envoyer
     {
-      if (log_detail >= 1)  Serial.printf("Plus de Messages restants dans le buffer RTC : \n\r");
-      if ((type_reveil <=3)  && mise_veille)  // reveil timer, PIR ou inconnu
+      if (log_detail >= 2)  Serial.printf("Plus de Messages dans le buffer RTC. Statut:%d Reveil:%d\n\r", My_statut&3, type_reveil);
+      if ((type_reveil <=3)  && mise_veille && ((My_statut & 3) == 1))  // reveil timer, PIR ou inconnu
       {
         uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
         if (mode_rapide==12)
         sleep_time = (uint64_t)periode_cycle * 1000000;
 
-        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL); 
       }
     }
   }
@@ -5543,25 +5714,32 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
   return result;
 }
 
-
-uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node)
+// envoi direct ou mise en queue
+// return : 
+// 0: message mis en queue et parti
+// 1à2: message mis en queue, test d'envoi mais erreur
+// 3à6 : erreur
+// 7: ok :mis en queue ok mais pas envoyé car node en veille
+uint8_t envoi_data(Message_Struct mess_esp, uint8_t node)
 {
-  if (node >= NB_CAPT ||
+  if (node >= NB_CAPT) return 3;
+
+  if (!(Node[node].Nstatut & 3)  ||
       !(Node[node].mac_node[0] || Node[node].mac_node[3] ||
         Node[node].mac_node[4]) ||
       esp_now_actif != 1)
   {
     Serial.println("Adresse Mac destinataire nulle");
-    return 2;
+    return 3;
   }
 
   if (!ensure_gateway_queue())
-    return 1;
+    return 3;
 
   const size_t messageSize = mess_esp.longueur + 3;
   if (messageSize < 5 || messageSize > 220 ||
-      messageSize > sizeof(Message_EspNow))
-    return 2;
+      messageSize > sizeof(Message_Struct))
+    return 3;
 
   if (xSemaphoreTake(gatewayQueueMutex, portMAX_DELAY) != pdTRUE)
     return 4;
@@ -5581,7 +5759,7 @@ uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node)
   // Un échec d'ack laisse le premier bloc en tête ; une nouvelle insertion
   // déclenchera une nouvelle tentative.
   uint8_t num_queue = gateway_buffer_message_count(node);
-  if (log_detail >=1) Serial.printf("======= ENVOI MESSAGE =======queue:%i\n\r",num_queue);
+  if (log_detail >=1) Serial.printf("======= ENVOI MESSAGE ===== queue:%i my_statut:%d\n\r",num_queue, My_statut&3);
   if (log_detail>=3)
   {
     Serial.printf("Message ajoute au buffer RTC (taille: %zu, octets utilises: %zu, head: %u, tail: %u)\n\r",
@@ -5590,7 +5768,7 @@ uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node)
                   Node[node].head,
                   Node[node].tail);
   }
-  // Impression du message envoyé en hexadécimal pour le débogage
+  // Impression du message mis en queue en hexadécimal pour le débogage
   if (log_detail>=2) {
     for (size_t i = 0; i < messageSize; i++)
     {
@@ -5598,10 +5776,19 @@ uint8_t envoi_data(Message_EspNow mess_esp, uint8_t node)
     }
     Serial.println();
   }
-  return traitement_queue_data_gateway(0, node);  // sans mise en veille à la fin
+  if ((Node[node].Nstatut & 3) == 3)  // 3:actif
+  {
+    Serial.println("envoi message immediat au node");
+    return traitement_queue_data_gateway(0, node);  // sans mise en veille à la fin
+  }
+  else 
+  {
+    Serial.println("pas d'envoi car node en veille");
+    return 7; // ok mais node en veille
+  }
 }
 
-uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNow * message)
+uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_Struct * message)
 {
   uint8_t result = false;
   if (log_detail >= 3) Serial.printf("\n--- Essai canal %d ---\n\r", channel);
@@ -5621,7 +5808,7 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
     esp_err_t get_channel_err = esp_wifi_get_channel(&actual_channel, &second);
     if (err != ESP_OK || get_channel_err != ESP_OK || actual_channel != channel)
     {
-      Serial.printf("⚠️ Echec changement canal (demandé:%d, actuel:%d, erreur:%s)\n\r",
+      Serial.printf("⚠️ Echec changement canal (demande:%d, actuel:%d, erreur:%s)\n\r",
                     channel, actual_channel,
                     esp_err_to_name(err != ESP_OK ? err : get_channel_err));
       return false;
@@ -5629,38 +5816,34 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
 
     delay(50);
     peerInfo->channel = actual_channel;
-    if (log_detail >= 1) Serial.printf("STA non connecté : channel actuel: %d\n\r", actual_channel);
+    if (log_detail >= 1) Serial.printf("STA non connecte : channel actuel: %d\n\r", actual_channel);
   }
   else  // Wifi deja connecté, on ne peut pas changer de canal, on envoie sur le canal actuel
   {
     actual_channel = WiFi.channel();
     peerInfo->channel = actual_channel;
-    Serial.printf("STA connecté : channel actuel: %d\n\r", actual_channel);
+    Serial.printf("STA connecte : channel actuel: %d\n\r", actual_channel);
   }
 
-  if (esp_now_is_peer_exist(mac_gw))
+  esp_err_t peer_err;
+  if (esp_now_is_peer_exist(peerInfo->peer_addr))
   {
-    esp_err_t err = esp_now_del_peer(mac_gw);
-    if (err != ESP_OK)
-    {
-      Serial.printf("Erreur suppression peer: %s\n", esp_err_to_name(err));
-      return false;
-    }
+    peer_err = esp_now_mod_peer(peerInfo);
   }
-
+  else
   {
-    esp_err_t err = esp_now_add_peer(peerInfo);
-    if (err != ESP_OK)
-    {
-      Serial.printf("Erreur ajout peer: %s\n", esp_err_to_name(err));
-      return false;
-    }
+    peer_err = esp_now_add_peer(peerInfo);
+  }
+  if (peer_err != ESP_OK)
+  {
+    Serial.printf("Erreur configuration peer: %s\n", esp_err_to_name(peer_err));
+    return false;
   }
 
   ackReceived = 0;
   ackChannel = -1;
   ackExpectedSequence = message->num_seq;
-  esp_err_t resulta = esp_now_send(mac_gw, (uint8_t *) message, message->longueur + 3);
+  esp_err_t resulta = esp_now_send(peerInfo->peer_addr, (uint8_t *) message, message->longueur + 3);
 
   if (log_detail >= 1)
   {
@@ -5671,17 +5854,23 @@ uint8_t envoi_now(uint8_t channel, esp_now_peer_info_t * peerInfo, Message_EspNo
 
   if (resulta == ESP_OK)
   {
-    int wait = 0;
-    while (!ackReceived && wait < 100)  // max 500ms
+    if (message->statut & 0b1000)
     {
-      delay(5);
-      wait++;
+      ackReceived = 1;  // pas d'ack demandé => ok
     }
-
+    else
+    {
+      int wait = 0;
+      while (!ackReceived && wait < 200)  // max 500ms
+      {
+        delay(5);
+        wait++;
+      }
+      if (ackReceived && (log_detail >= 2)) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 5);
+    }
     if (ackReceived)
     {
       result = true;
-      if (log_detail >= 2) Serial.printf("✅ Ack Recu en %i ms\n\r", wait * 5);
       if (last_wifi_channel != actual_channel)
       {
         last_wifi_channel = actual_channel;
@@ -5715,4 +5904,200 @@ float absoluteHumidity(float temperature, float relativeHumidity)
   return (1324.7f * relativeHumidity / 100.0f *
           exp((17.67f * temperature) / (temperature + 243.5f))) /
          (273.15f + temperature);
+}
+
+// paramètres :
+// chaine : chaine de caractères ascii 
+// type : 1 : uint8_t  2:uint16_t  3:int8_t 4:int16_t
+// nombre : variable résultat à retourner à la fonction appelante
+// output/return : 0:ok 1:erreur 
+uint8_t extraction_mess(uint8_t* chaine, uint8_t type, uint16_t* nombre)
+{
+  uint8_t res=1;
+  // la chaine de caractères comprend plusieurs caractères ascii qui sont des nombres de 0 à 9, éventuellement débutant par un - pour les chiffres négatifs
+  // il faut parcourir chaque caractère, tant que c'est un nombre et calculer le nombre résultant
+  // au premier caractère non numérique, stopper le décompte et donner le résultat
+  // si il n'y a pas de caractère numérique, renvoyer une erreur
+  // si le nombre est trop grand pour rentrer dans le format type défini, renvoyer une erreur
+  // nota : le paramètre nombre est mal défini dans la fonction, car il peut être de format variable (en fonction du type) => à modifier
+  return res;
+}
+
+void traitement_reveil_periodique()
+{
+  // envoi d'un message pour signaler le réveil périodique
+  Serial.printf("longueur HV2%i\n\r", strlen("HV2"));
+  envoi_mess_esp("HV2");
+
+}
+
+void traitement_message_recu(Message_Struct &msg)
+{
+    Serial.printf("longueur:%i code1: %c code2:%c\n\r", msg.longueur, msg.code, msg.code2);
+  if (msg.longueur<4) return; // minimum 4 : Code et Code2, sans payload
+  if (msg.longueur>=MAX_PAYLOAD+2) return;  // ou 4
+
+  // si message A ou 1 à 5 => recep_message
+  if ((msg.code=='A') || (msg.code>='1') && (msg.code<='5'))
+  {
+    // code, code2, payload terminé par 0 : ZH690AV EI0
+    ((uint8_t*)&msg)[msg.longueur+3] = 0;
+    recep_message(((char*)&msg)+5);
+  }
+  else
+  {
+    Serial.printf("autre code code1: %02X code2:%02X\n\r", msg.code, msg.code2);
+    if (msg.code=='V')  // veille
+    {
+      if (msg.code2=='0')  // arret reveil periodique
+      {
+        reveil_periodique = 0;
+        xTimerStop(xTimer_ReveilPeriodique,100);
+      }
+      else if (msg.code2=='1')  // activation reveil periodique
+      {
+        uint16_t periode;
+        msg.payload[msg.longueur-3]=0;
+        uint8_t res = extraction_mess(msg.payload, 2, &periode);  // type 1 : uint8_t  type2:uint16_t
+        if (log_detail>=2) Serial.printf("reveil periodique : %isec  res:%i\n\r", periode, res);
+        if (!res && periode>=10 && periode <=600)  // periode entre 10 secondes et 10 minutes
+        {
+          reveil_periodique = periode;
+          xTimerChangePeriod(xTimer_ReveilPeriodique, periode*(1000/portTICK_PERIOD_MS),100); 
+          xTimerStart(xTimer_ReveilPeriodique,100);
+        }
+      }
+    }
+    traitement_message_recu_appli(msg);
+  }
+}
+
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
+{
+  if (len > (int)sizeof(Message_Struct)) {
+    Serial.println("⚠️ message trop long");
+    return;
+  }
+
+  EspNowRecvMsg_t espRecv;
+
+  // niveau de réception RSSI
+  if (info != nullptr && info->rx_ctrl != nullptr)  last_rssi = info->rx_ctrl->rssi;
+  else last_rssi=0;
+  espRecv.rssi = last_rssi;
+
+  memcpy(espRecv.src_addr, info->src_addr, 6);
+  memcpy(&espRecv.msg, data, len);
+  espRecv.len = len;
+
+  if (log_detail>=1) 
+  {
+    // Afficher le canal WiFi actuel
+    uint8_t current_channel;
+    wifi_second_chan_t second;
+    esp_wifi_get_channel(&current_channel, &second);
+    Serial.printf("Message du node:%c canal:%d\n\r", espRecv.msg.emetteur, current_channel);
+    Serial.printf("   Donnees recues: ");
+    for (uint8_t i = 0; i < len; i++) Serial.printf("%02X ", ((uint8_t*)&(espRecv.msg))[i]);
+    Serial.println();
+  }
+
+
+  uint8_t recu=0;
+
+  if ((espRecv.msg.destinataire & 0x7F) == My_Address)
+  {
+    //if ((espRecv.msg.emetteur & 0x7F) == SERVER_ADD)
+    //{
+      if (espRecv.msg.code == 'K')
+      {
+        recu = 1;
+        if (log_detail>=1) Serial.println("Ack recu");
+        if (ackExpectedSequence == espRecv.msg.num_seq)
+        {
+          if (log_detail>=2) Serial.println("Ack recu correct");
+          ackReceived = true;
+
+          // Y at-il des messages que je dois recevoir ensuite => si oui, pas de mise en veille
+          if (espRecv.msg.code2 == 1)
+          {
+            if (log_detail>=2) Serial.println("Le node distant a des messages en attente a envoyer"); 
+            uint8_t node;
+            if (ident_node(static_cast<uint8_t>(data[0]), &node) )   // reception ack d'un node pas actif
+                  return;
+            if ((My_statut & 3) == 3) return;   // si je suis actif, pas besoin de mettre un timer
+            if (gatewayQueueTimer[node] != NULL)  // messages à recevoir de ce node => timer pas de veille
+            {
+              xTimerStart(gatewayQueueTimer[node], 0);
+              if (log_detail >= 3)  Serial.println("timer demarre");
+            }
+          }
+        }
+        else
+        {
+          Serial.println("Numéro d'Ack incorrect");
+        }
+      }
+    //}
+      else
+      {
+        if (xQueueSend(QueueEspNow, &espRecv, 0) != pdTRUE) {
+          Serial.println("⚠️ QueueEspNow pleine");
+          return;
+        }
+        systeme_eve_t evt = { EVENT_ESP_RECV, 0 };
+        if (xQueueSend(eventQueue, &evt, 0) != pdTRUE) {
+          erreur_queue++;
+          Serial.println("⚠️ eventQueue pleine (ESP_RECV)");
+        }
+      }
+  }
+}
+
+void envoi_ack(Message_Struct &msg)
+{
+  Message_Struct ack_msg;
+  ack_msg.destinataire = msg.emetteur | 0x80;  // bit fort à 1 pour indiquer que c'est un message hexadécimal
+  ack_msg.emetteur = My_Address ;    
+  ack_msg.longueur = 4+0;  // longueur du payload
+  ack_msg.num_seq = num_sequentiel;  // renvoyer le numéro séquentiel reçu
+  ack_msg.statut = 1;  // ce node est en veille
+  if (My_statut == 3)  ack_msg.statut = 0b11; // mode actif
+  ack_msg.code = 'K';    // code pour ACK
+
+  ack_msg.code2 = 0;     // 0 si pas de message à envoyer, 1 si il y en a.
+  uint8_t node;
+  uint8_t res_node = conversion_node(msg.emetteur, &node);
+  if (!res_node)   // On ne renvoie un ack qu'a un node deja valide
+  {
+    if (node_buffer_used(node) > 0) ack_msg.code2 = 1;  // il y a des messages dans la queue d'envoi
+    envoi_data(ack_msg, node);
+
+    /*esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, src_addr, ESP_NOW_ETH_ALEN);
+
+    peer.channel = 0;          // canal WiFi courant
+    peer.ifidx = WIFI_IF_STA;  // interface utilisée
+    peer.encrypt = false;
+
+    if (!esp_now_is_peer_exist(peer.peer_addr)) {
+      esp_err_t err = esp_now_add_peer(&peer);
+      if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
+        Serial.printf("Erreur ajout peer: %d (%s)\n",
+                      err, esp_err_to_name(err));
+        return;
+      }
+    } 
+        
+    if (log_detail>=2) Serial.printf("src_addr:%02x:%02x:%02x:%02x:%02x:%02x dest:%02X emetteur:%02X long:%d num_seq:%d stat:%02X code:%c code2:%02X \n",
+                  src_addr[0], src_addr[1], src_addr[2], src_addr[3], src_addr[4], src_addr[5],
+                  ack_msg.destinataire, ack_msg.emetteur, ack_msg.longueur, ack_msg.num_seq, ack_msg.statut, ack_msg.code, ack_msg.code2);
+    esp_err_t result = esp_now_send(src_addr, (uint8_t *)&ack_msg, ack_msg.longueur+3);
+    if (result == ESP_OK) {
+      if (log_detail>=2) Serial.println(" Accuse de reception envoye");
+    } else {
+      Serial.printf("❌ Erreur envoi ACK: %i\n", result);
+    }*/
+
+  }
 }
