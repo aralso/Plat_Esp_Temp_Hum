@@ -26,8 +26,8 @@
   #define GRAPH3  0
   //#define PIR_ACTIF
   
-  //#define ESP32_Fire2
-  #define ESP32_uPesy
+  #define ESP32_Fire2_C6
+  //#define ESP32_uPesy
   //#define ESP32_S3
 
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
@@ -42,7 +42,7 @@
 #ifdef ESP_TJ_ACTIF  
   #define ESP32_S3
   #define OTA
-  //#define ESP32_Fire2
+  //#define ESP32_Fire2_C6
   #define MODE_Wifi  // Wifi sinon Ethernet
   #define Sans_websocket
   //#define Sans_securite
@@ -249,13 +249,14 @@ const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
     #define PIN_SDA 21
     #define PIN_SCL 22
   #endif
-  #ifdef ESP32_Fire2    // Firebeetle
+  #ifdef ESP32_Fire2_C6    // Firebeetle  Conso deep_sleep=37uA
     #define PIN_REVEIL 4  // Pin de réveil (Bouton externe) PIN RTC : 0 à 7
+    #define PIN_REVEIL2 5  // Pin d'entrée pour interruption (ex: detecteur PIR)
     #define PIN_Vbatt 0        // Pin Surveillance Batterie (LiPo/2)
     #define PIN_SDA 19
     #define PIN_SCL 20
   #endif
-  #ifdef ESP32_uPesy
+  #ifdef ESP32_uPesy    // Conso deep_sleep=10uA
     // Nota : BTN : 14 et 25
     #define PIN_Vbatt 35    // Pin Surveillance Batterie (LiPo/)
     #define PIN_OUT0 4     // Power pour alimenter le capteur PIR : 10uA
@@ -271,7 +272,7 @@ const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
     const int PIN_RXModbus = 16;  // s3:18  devkitv1:16 RO
     const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
   #endif
-  #ifdef ESP32_Fire2
+  #ifdef ESP32_Fire2_C6
     const int PIN_RXModbus = 18;  // s3:18  devkitv1:16 RO
     const int PIN_TXModbus = 17;  // s3:17  devkitv1:17 DI
   #endif
@@ -291,7 +292,7 @@ const int PIN_Text = 36;   //  Text:Entrée analogique 32 à 36 et 39
 #define MAX485_RE_NEG 32  // S3:35  devkitv1:32
 #define MAX485_DE 33      // s3:36  devkitv1:33
 #endif
-#ifdef ESP32_Fire2
+#ifdef ESP32_Fire2_C6
 #define MAX485_RE_NEG 35  // S3:35
 #define MAX485_DE 36      // s3:36
 #endif
@@ -338,7 +339,7 @@ uint8_t envoi_valeur_instant(float Tint, float Humid, float HA);
 void envoi_temp_hygro();
 void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3);
 
-void passage_deep_sleep(uint64_t temps);
+void passage_deep_sleep(uint64_t temps, uint8_t index);
 void envoi_ack(Message_Struct &msg);
 
 extern float Vbatt_ESP;   // Tension batterie ESP
@@ -394,8 +395,7 @@ typedef struct {
 #define Code_erreur_esp_now 10
 
 
-constexpr int NB_Graphique =
-    6;  // Temp Ext, Temp int, Chaud, MoyText, MoyTint, Cout,
+constexpr int NB_Graphique = 6;  // Temp Ext, Temp int, Chaud, MoyText, MoyTint, Cout,
 constexpr int NB_Val_Graph = 99;
 
 #define NB_VAL_TAB  12
@@ -410,8 +410,6 @@ extern QueueHandle_t eventQueue;  // File d'attente des événements sequenceur
 extern uint16_t erreur_queue;
 extern TimerHandle_t debounceTimer;
 extern TimerHandle_t xTimer_activ_chaud;
-extern  uint8_t periode_cycle;
-extern  uint8_t mode_rapide;
 
 extern  uint16_t compteur_detection;
 extern  uint16_t Nb_PI[];
@@ -425,10 +423,8 @@ extern volatile uint8_t ackReceived;  // global pour indiquer que le peer a ack�
 extern volatile int ackChannel;       // canal où ça a marché
 extern uint8_t num_sequentiel;  // pour Ack
 
-extern uint8_t mode_reseau;
 extern  uint8_t init_time;
 extern float heure;
-extern  uint8_t skip_graph;
 
 extern unsigned long last_remote_Tint_time, last_remote_Text_time,
     last_remote_heure_time;
@@ -438,9 +434,7 @@ extern  float tempI_moy24h, tempE_moy24h, Hum_24h, HA_moy24h, PIR_24h;
 extern  uint16_t cpt24_Tint, cpt24_Text, cpt24_Hum, cpt24_HA, cpt24_PIR;
 
 
-extern char mdp_routeur[];
 extern  int16_t graphique[NB_Val_Graph][NB_Graphique];
-extern uint16_t Seuil_batt_sonde;  // millivolt
 extern uint16_t Seuil_batt_arret_ESP;  // millivolt
 extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR  3:inconnu
 // 4:reveil par bouton_reveil   10:toujours actif
@@ -461,8 +455,6 @@ void init_10_secondes();
 uint8_t requete_action_appli(const char* reg, const char* data);
 void appli_event_on(systeme_eve_t evt);
 void appli_event_off(systeme_eve_t evt);
-uint8_t requete_Get_appli(String var, float* valeur);
-uint8_t requete_Set_appli(String param, int val);
 uint8_t requete_GetReg_appli(int reg, float* valeur);
 uint8_t requete_SetReg_appli(int param, float valeurf);
 uint8_t requete_Get_String_appli(uint8_t type, String var, char* valeur);

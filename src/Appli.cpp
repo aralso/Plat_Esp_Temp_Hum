@@ -74,8 +74,6 @@ extern TimerHandle_t gatewayQueueTimer;
 
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
-//void OnDataRecv(const uint8_t *mac, const uint8_t *data, int len);
-//void OnDataRecv(const esp_now_peer_info_t * info, const uint8_t *incomingData, int len);
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
@@ -317,16 +315,19 @@ uint8_t setup_appli()
     uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
     if (mode_rapide==12)
     sleep_time = (uint64_t)periode_cycle * 1000000;
-    passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+    passage_deep_sleep( sleep_time, 10); // au power-on apres detection PIR
   }
   else 
   {    
     if (type_reveil == 4)    // BTN => type_reveil=4
     {  
+      // La valeur de prolong_veille est chargée depuis la NVS plus bas dans setup().
+      // Recalculer l'échéance ici évite d'utiliser une valeur RTC obsolète.
+      wake_up_time = millis() + prolong_veille*1000;
       delay(100);  // délai pour différencier appui court de appui long
-      uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 0, appui => 1
+      uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 1, appui => 0
       if (log_detail>=1)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
-      if (etat_BTN0)  // BTN encore appuyé
+      if (!etat_BTN0)  // BTN encore appuyé
       {
         continue_setup=1;
         My_statut = 3;
@@ -362,7 +363,7 @@ uint8_t setup_appli()
         uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
         if (mode_rapide==12)
         sleep_time = (uint64_t)periode_cycle * 1000000;
-        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+        passage_deep_sleep( sleep_time, 11); // apres power-on suite mesure temperature/hygrometrie
       }
     }
   }
@@ -558,7 +559,6 @@ char* requete_status_appli(char *json_response, char *p, uint8_t type)
 
 // type 1
 uint8_t requete_Get_appli(const char* var, float *valeur)
-  //uint8_t requete_Get_appli (String var, float *valeur) 
 {
   uint8_t res=1;
 
@@ -1153,7 +1153,7 @@ float readBatteryVoltage() {
   // Conversion:
   // raw / 4095.0 * 3.3V (tension ref approx) * 2 (pont diviseur) * 1.1 (facteur corection empirique souvent nécessaire sur ESP32)
   // On commence sans facteur 1.1 pour tester
-  #ifdef ESP32_Fire2
+  #ifdef ESP32_Fire2_C6
      voltage = (raw / 4095.0) * 3.3 * 2.5; 
   #endif
 

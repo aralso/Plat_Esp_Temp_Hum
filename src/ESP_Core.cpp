@@ -1491,7 +1491,11 @@ void setup()
     else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0   || wakeup_reason == ESP_SLEEP_WAKEUP_GPIO || wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 )
     {
       reveil = 4;
-      uint64_t wakeup_pins = esp_sleep_get_ext1_wakeup_status();
+      uint64_t wakeup_pins = 0;
+      if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO)
+        wakeup_pins = esp_sleep_get_gpio_wakeup_status();
+      else
+        wakeup_pins = esp_sleep_get_ext1_wakeup_status();
       if (log_detail>=3) Serial.printf("wakeup_pins: %016llX\n\r", wakeup_pins);
       if (wakeup_pins & (1ULL << PIN_REVEIL)) {
           if (log_detail>=3) Serial.println("Réveil par PIN1");
@@ -3032,7 +3036,7 @@ uint8_t requete_Set_Action(const char *reg, const char *data)
       uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
       if (mode_rapide==12)
       sleep_time = (uint64_t)periode_cycle * 1000000;
-      passage_deep_sleep(sleep_time);  // 30ULL * 1000000ULL); //
+      passage_deep_sleep(sleep_time, 1);  // commande mise en veille VEI
     }
 
     if (strcmp(reg, "PING0") == 0) 
@@ -4642,7 +4646,7 @@ void loop()
          if (mode_rapide==12)
           sleep_time = (uint64_t)periode_cycle * 1000000;
           if (force_stay_awake == 2) force_stay_awake=0;  // 2:forcage 1 seule fois
-          passage_deep_sleep(sleep_time);  // 30ULL * 1000000ULL); //
+          passage_deep_sleep(sleep_time, 2);  // expiration délai timer wake_up_time
       }
     }
   #endif
@@ -4653,20 +4657,20 @@ void loop()
 
 }
 
-void passage_deep_sleep(uint64_t temps)
+void passage_deep_sleep(uint64_t temps, uint8_t index)
 {
   uint64_t sleep_us = min(temps, 60ULL * 60ULL * 1000000ULL);
 
   // If the global flag pas_de_veille is set, skip entering deep sleep
   if (pas_de_veille) {
-    Serial.printf("passage_deep_sleep(): pas_de_veille==1 -> skipping deep sleep (requested %llu us)\n\r", (unsigned long long)sleep_us);
+    Serial.printf("passage_deep sleep(): index:%i pas_de_veille==1 -> skipping deep sleep (requested %llu us)\n\r", index, (unsigned long long)sleep_us);
     Serial.flush();
     return;
   }
 
   if (log_detail>=3) Serial.printf("PIN_REVEIL state = %d %d\n\r", digitalRead(PIN_REVEIL), gpio_get_level((gpio_num_t)PIN_REVEIL));
 
-  if (log_detail>=1) Serial.printf("Passage deep sleep pour %llu milis:%lu\n\r", (unsigned long long)sleep_us, millis());
+  if (log_detail>=1) Serial.printf("Passage deep sleep pour %llu milis:%lu index:%i\n\r", (unsigned long long)sleep_us, millis(), index);
 
   esp_sleep_enable_timer_wakeup(temps);
 
@@ -4730,7 +4734,7 @@ void passage_deep_sleep(uint64_t temps)
   #endif
 
 
-  #ifdef ESP32_Fire2  // Firebeetle
+  #ifdef ESP32_Fire2_C6  // Firebeetle
     // 2. Configurer le réveil par GPIO pour ESP32-C6
     // Sur C6, on active le wake-up sur le niveau BAS (LOW)
     gpio_config_t config = {
@@ -5680,7 +5684,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
     xSemaphoreGive(gatewayQueueMutex);
     if (remaining > 0 && gatewayQueueTimer[node] != NULL)  // autres messages à envoyer
     {
-      xTimerStart(gatewayQueueTimer[node], 0);
+      xTimerStart(gatewayQueueTimer[node], 0); // nota : le timer redémarre à 0 à chaque appel
       if (log_detail >= 1)
         Serial.printf("Messages restants dans le buffer a envoyer : %u\n\r", remaining);
     }
@@ -5693,7 +5697,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
         if (mode_rapide==12)
         sleep_time = (uint64_t)periode_cycle * 1000000;
 
-        passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL); 
+        passage_deep_sleep( sleep_time, 3); // apres envoi de messages multiples
       }
     }
   }
@@ -5705,7 +5709,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
       if (mode_rapide==12)
       sleep_time = (uint64_t)periode_cycle * 1000000;
 
-      passage_deep_sleep( sleep_time); // 30ULL * 1000000ULL);
+      passage_deep_sleep( sleep_time, 4); // apres fin d'essai avec échec d'envoi de messages multiples
     }
   }
   if (log_detail >= 1) Serial.printf("Fin d'envoi du message : result=%d\n\r", result);
@@ -6028,7 +6032,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
             if ((My_statut & 3) == 3) return;   // si je suis actif, pas besoin de mettre un timer
             if (gatewayQueueTimer[node] != NULL)  // messages à recevoir de ce node => timer pas de veille
             {
-              xTimerStart(gatewayQueueTimer[node], 0);
+              xTimerStart(gatewayQueueTimer[node], 0); // Attente pour messages à recevoir
               if (log_detail >= 3)  Serial.println("timer demarre");
             }
           }

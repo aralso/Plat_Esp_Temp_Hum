@@ -292,7 +292,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                   12: réglage heure<br>
                   13 : activation OTA<br>
                   15 : seuil bas arret ESP<br>
-                  16 : duree allumage (sec)<br>
+                  16 : duree allumage avant veille(sec)<br>
                   17 : action : stockage<br>
                   18 : action : envoi<br>
                   19 : frequence mesure temp:0:var >1:fixe 2:1/2<br>
