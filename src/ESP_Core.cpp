@@ -35,6 +35,14 @@ V2 : pour gateway : message periodique suite a reveil
 K:accusé reception
 1à5 : valeurs eeprom
 
+Programmation par OTA :
+modifier le magic_number (ligne 1590) à chaque changement de la disposition des variables RTC_NOINIT_ATTR
+   (sinon, après un OTA, la RTC conservée serait lue avec l'ancienne disposition)
+Compiler d'abord (pio run -e ESP32_C6). Un build à froid dépasse les 120 s de la fenêtre OTA.
+Maintenir le bouton jusqu'au log Etat BTN0:0, puis attendre le Wi-Fi.
+Envoyer le registre 13 à 1 par /Set?type=2&reg=13&val=1 depuis le LAN (format à confirmer dans requete_Set).
+Lancer pio run -e ESP32_C6_OTA -t upload.
+Le pare-feu Windows doit autoriser Python (espota), car l'ESP se reconnecte au PC.
 */
 
 
@@ -86,7 +94,9 @@ static bool eth_connected = false;
 #include <base64.h>  // Nécessaire pour encoder les données binaires
 #include <ArduinoOTA.h>  // nécessaire pour OTA
 #include <Wire.h>
-#include "ClosedCube_HDC1080.h"
+#ifdef Temp_int_HDC1080
+  #include "ClosedCube_HDC1080.h"
+#endif
 #include "driver/rtc_io.h"
 
 #ifdef SDCARD
@@ -117,7 +127,9 @@ extern "C" {
 //#include "fb_gfx.h"
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
-#include "i2c.h"
+#ifdef CAPT_I2C
+  #include "i2c.h"
+#endif
 
 uint8_t err_wifi_repet;  // permet de resetter si le wifi ne se rétablit pas au bout de 4 jours
 uint16_t Seuil_batt_arret_ESP;  // millivolt
@@ -135,6 +147,8 @@ RTC_NOINIT_ATTR uint8_t vit_cpu;
 
 uint8_t My_statut; // 0:inconnu 1:veille 2:balise 3:tj actif
 RTC_NOINIT_ATTR uint16_t val_test;  // valeur test, pour essais
+
+IPAddress ipServeur;
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status);
@@ -199,6 +213,9 @@ uint8_t esp_initialise=0;  // flag pour indiquer si ESP-NOW a été initialisé
   RTC_NOINIT_ATTR uint8_t subnet[4];    // Masque de sous-réseau
   RTC_NOINIT_ATTR uint8_t primaryDNS[4];      // DNS primaire
   RTC_NOINIT_ATTR uint8_t secondaryDNS[4];    // DNS secondaire
+  RTC_NOINIT_ATTR uint8_t ip_serveur[4];  // Adresse IP statique du serveur
+
+  RTC_NOINIT_ATTR uint8_t etat_now;
 
 
 #else  // WT32
@@ -483,6 +500,16 @@ RTC_NOINIT_ATTR uint16_t TextV=0, TintV=0, HumV=0, HAV=0;  // pour stockage dans
 // OTA
 bool otaEnabled = false;
 unsigned long otaStartTime = 0;
+static bool otaStarted = false;  // ArduinoOTA.begin() effectué
+
+// Démarre l'écoute OTA seulement quand le Wi-Fi est connecté
+static void ota_demarrer()
+{
+  if (otaStarted || WiFi.status() != WL_CONNECTED) return;
+  WiFi.setSleep(false);  // le modem sleep peut faire perdre l'invitation OTA
+  ArduinoOTA.begin();
+  otaStarted = true;
+}
 
 #define DEBOUNCE_INTERVAL 30  // Temps anti-rebond en ms
 #define VALIDATION_COUNT 2  // Nombre de lectures consécutives pour valider un changement
@@ -999,7 +1026,45 @@ void taskHandler(void *parameter) {
                     appli_event_on(evt);
                     break;
 
-               case EVENT_SENSOR:
+                #ifdef CAMERA
+                  case EVENT_PRISE_VIDEO: {
+                    uint8_t res = capture_video_sd();
+                    if (res)  photo_video_en_cours=0;
+                    break;
+                  }
+
+                  case EVENT_PRISE_PHOTO: {
+                    uint8_t res = capture_photo_sd();
+                    if (res)  photo_video_en_cours=0;
+                    break;
+                  }
+
+                  case EVENT_ENCODE_LPC: {
+                    uint8_t res = encodeFile();
+                    if (res)  photo_video_en_cours=0;
+                    else
+                    {
+                      systeme_eve_t evt = { EVENT_ENVOI_FICHIER, 0 };  // Exemple : donnée = 123
+                      if (xQueueSendFromISR(eventQueue, &evt, NULL) != pdTRUE) 
+                      {
+                      if (erreur_queue<5) num_err_queue[erreur_queue]=9;
+                      erreur_queue++;
+                      }
+                    }
+                    break;
+                  }
+
+                  case EVENT_DECODE_LPC:
+                    decodeFile();
+                    break;
+                  case EVENT_ENVOI_FICHIER:
+                    envoyer_fichier();
+                    photo_video_en_cours=0;
+                    break;
+
+                #endif
+
+                case EVENT_SENSOR:
                     Serial.printf(">> Événement Capteur: valeur = %lu\n\r", (unsigned long)evt.data);
                     break;
 
@@ -1490,10 +1555,14 @@ void setup()
     }
     else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0   || wakeup_reason == ESP_SLEEP_WAKEUP_GPIO || wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 )
     {
+      /*Le réveil se fait niveau BAS (esp_deep_sleep_enable_gpio_wakeup(...LOW)).
+      Le setup calcule wakeup_pins comme si le réveil était niveau HAUT (digitalRead<<PIN). Bouton appuyé, le résultat est 0 et force_stay_awake n'est pas posé.
+      Soit on inverse le test (!digitalRead), soit on pose force_stay_awake=true dans setup_appli quand continue_setup=1.      */
       reveil = 4;
       uint64_t wakeup_pins = 0;
       if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO)
-        wakeup_pins = esp_sleep_get_gpio_wakeup_status();
+        // ESP32-S3 : pas d'API de statut GPIO wakeup (light sleep), on lit le niveau des broches (réveil niveau haut)
+        wakeup_pins = ((uint64_t)digitalRead(PIN_REVEIL) << PIN_REVEIL) | ((uint64_t)digitalRead(PIN_REVEIL2) << PIN_REVEIL2);
       else
         wakeup_pins = esp_sleep_get_ext1_wakeup_status();
       if (log_detail>=3) Serial.printf("wakeup_pins: %016llX\n\r", wakeup_pins);
@@ -1521,12 +1590,14 @@ void setup()
 
   // determination si la RTC reste valide (apres un reveil deepsleep)
   //Serial.printf("rtc_magic: %08X\n\r", rtc_magic);
-  if (rtc_magic != 0x05343211 )  
+  // À modifier à chaque changement de la disposition des variables RTC_NOINIT_ATTR
+  // (sinon, après un OTA, la RTC conservée serait lue avec l'ancienne disposition)
+  if (rtc_magic != 0x05343212 )  
   {
     // RTC non valide = cold reset
     rtc_valid = 0;
     init_rtc_variables(); // initialisation des variables RTC, la ram normale est mise à 0
-    rtc_magic = 0x05343211;
+    rtc_magic = 0x05343212;
   }
   else
   {
@@ -1552,7 +1623,7 @@ void setup()
     else if (reveil==2) type_reveil=2; // PIR
     else type_reveil=3;           // inconnu-watchdog-Exception
   }
-  #ifdef ESP_TJ_ACTIF
+  #ifndef ESP_VEILLE  // toujours actif
     type_reveil = 10;  // power on, toujours actif
   #endif
 
@@ -1572,7 +1643,7 @@ void setup()
   // Délai de stabilisation pour éviter les conflits UART/WiFi
   //delay(500);
 
-  #ifdef ESP_TJ_ACTIF
+  #ifndef ESP_VEILLE  // tj actif
     esp_log_level_set("*", ESP_LOG_WARN);  // niveau minimum   - ESP_LOG_INFO  ou rien
     esp_log_level_set("HTTPClient", ESP_LOG_WARN);
     esp_log_level_set("NetworkManager", ESP_LOG_WARN);
@@ -2101,14 +2172,14 @@ void setup()
       });
 
       //WiFi.setTxPower(WIFI_POWER_19_5dBm); // puissance max
-      ArduinoOTA.begin();
+      ota_demarrer();
 
       // 🔥 Fenêtre OTA de secours
       if (boot_rapide < 2) {
         if (log_detail>=3) Serial.println("Fenêtre OTA 5 secondes...");
         unsigned long start = millis();
         while (millis() - start < 5000) {
-          ArduinoOTA.handle();
+          if (otaStarted) ArduinoOTA.handle();
           delay(10);
         }
       }
@@ -3384,7 +3455,8 @@ uint8_t requete_GetReg(int reg, float *valeur) {
 
   // First try generic lookup in PARAMS table
   size_t n = PARAMS_COUNT;
-  for (size_t i = 0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i)
+  {
     Param &p = PARAMS[i];
     if (p.order != (uint8_t)reg) continue;
 
@@ -3412,8 +3484,9 @@ uint8_t requete_GetReg(int reg, float *valeur) {
       default:
         break;
     }
-
     if (!res) break; // found and set
+  }
+
   if (reg == 13)  // registre 13 : activation OTA
   {
     res = 0;
@@ -3441,7 +3514,6 @@ uint8_t requete_GetReg(int reg, float *valeur) {
     res = 0;
     *valeur = WiFi.RSSI();
   }
-}
 
   res2 = requete_GetReg_appli(reg, valeur);
 
@@ -3593,12 +3665,15 @@ uint8_t requete_SetReg(int param, float valeurf, uint8_t secu)
       {
         res = 0;
         otaEnabled = false;
+        wake_up_time = millis() + 10000;  // 10 secondes
       }
       if (valeur==1)
       {
         res = 0;
         otaEnabled = true;
         otaStartTime = millis();
+        force_stay_awake = true;
+        wake_up_time = millis() + 150000;  // 150 secondes
       }
     }
     if (param == 22)  // registre 22 : adresse Node
@@ -4628,11 +4703,17 @@ void loop()
 
   if (otaEnabled)
   {
-    ArduinoOTA.handle();
+    ota_demarrer();  // attend que le Wi-Fi soit connecté
+    if (otaStarted) ArduinoOTA.handle();
 
     if (millis() - otaStartTime > 120000) {
       otaEnabled = false;
     }
+  }
+  else if (otaStarted)
+  {
+    ArduinoOTA.end();
+    otaStarted = false;
   }
 
   #ifdef ESP_VEILLE
@@ -4660,6 +4741,9 @@ void loop()
 void passage_deep_sleep(uint64_t temps, uint8_t index)
 {
   uint64_t sleep_us = min(temps, 60ULL * 60ULL * 1000000ULL);
+
+  // pas de veille si OTA activé (dure 120 secondes)
+  //if (otaEnabled) return;
 
   // If the global flag pas_de_veille is set, skip entering deep sleep
   if (pas_de_veille) {
@@ -5352,6 +5436,7 @@ uint8_t connectWiFiWithDiagnostic() {
       IPAddress ipSubnet = makeIPAddress(subnet);
       IPAddress ipPrimaryDNS = makeIPAddress(primaryDNS);
       IPAddress ipSecondaryDNS = makeIPAddress(secondaryDNS);
+      ipServeur = makeIPAddress(ip_serveur);
 
       if (log_detail>=3) Serial.printf("Configuration IP statique: %s\n\r", ipLocal.toString().c_str());
       if (!WiFi.config(ipLocal, ipGateway, ipSubnet, ipPrimaryDNS, ipSecondaryDNS)) {

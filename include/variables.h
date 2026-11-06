@@ -26,8 +26,8 @@
   #define GRAPH3  0
   //#define PIR_ACTIF
   
-  #define ESP32_Fire2_C6
-  //#define ESP32_uPesy
+  //#define ESP32_Fire2_C6
+  #define ESP32_uPesy
   //#define ESP32_S3
 
   //#define Temp_int_HDC1080  // Capteur I2C HDC1080
@@ -37,9 +37,9 @@
   #define OTA
   #define ENVOI
   #define STOCKAGE
-#endif
 
-#ifdef ESP_TJ_ACTIF  
+#else
+
   #define ESP32_S3
   #define OTA
   //#define ESP32_Fire2_C6
@@ -335,7 +335,7 @@ void i2cRecovery();
 void i2cBootRecovery();
 uint16_t selec_graph(uint8_t code, uint16_t hum, uint16_t ha, uint16_t pir);
 void detection_pir();
-uint8_t envoi_valeur_instant(float Tint, float Humid, float HA);
+uint8_t envoi_valeur_instant(float Tint, float Humid, float HA, float vbatt);
 void envoi_temp_hygro();
 void writeLogG(uint8_t code, uint16_t c1, uint16_t c2, uint16_t c3);
 

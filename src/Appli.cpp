@@ -42,7 +42,6 @@ RTC_NOINIT_ATTR unsigned long last_detection_time=0;
 RTC_NOINIT_ATTR uint16_t Nb_PI[NB_VAL_TAB];
 
 RTC_NOINIT_ATTR uint8_t  WIFI_CHANNEL;
-RTC_NOINIT_ATTR uint8_t etat_now;
 RTC_NOINIT_ATTR uint16_t Seuil_batt_sonde;  // millivolt
 RTC_NOINIT_ATTR uint8_t Nb_jours_Batt_log;
 RTC_NOINIT_ATTR uint8_t freq_envoi, cpt_mesure, cpt_nb_val;
@@ -241,11 +240,10 @@ void setup_1()
 void setup_2()
 {
 
+  // lecture des données sauvegardées dans la partition log_flashG
+  readLastLogsG(99);
 
-  #ifdef ESP_TJ_ACTIF
-
-    // lecture des données sauvegardées dans la partition log_flashG
-    readLastLogsG(99);
+  #ifndef ESP_VEILLE
 
     // Configuration WiFi en mode Station pour ESP-NOW
 
@@ -282,9 +280,6 @@ void setup_2()
     Serial.println("   En attente de messages...");
     Serial.println("======================================\n\r");
     delay(2000); // 2 secondes de pause pour lire
-
-  #else  // Si veille
-      readLastLogsG(99);
 
   #endif
 }
