@@ -288,6 +288,11 @@ uint16_t cpt_ws_timeout=0, cpt_ws_ping=0;
 bool force_stay_awake = false; // Flag pour rester éveillé après appui bouton
 uint8_t type_reveil;  //0:power on 1: réveil par timer, 2: réveil par PIR 3:inconnu 4:reveil par BTN 10:actif
 unsigned long wake_up_time = 0; // Temps de réveil
+bool appui_bouton_long = false; // réveil par bouton : appui >= SEUIL_APPUI_LONG_MS (mesuré au début de setup)
+
+#define SEUIL_APPUI_LONG_MS 500     // appui plus court : réveil court (mesure + envoi + veille)
+#define DUREE_BOOT_REVEIL_MS 150    // ROM + bootloader : temps écoulé entre l'appui et millis()=0
+#define STABILITE_RELACHE_MS 20     // anti-rebond du relâchement
 
 //x seconds Watchdog 
 #define WDT_TIMEOUT 80  // reset watchdog dividé par 3 => 24 secondes
@@ -1516,13 +1521,68 @@ void i2cBootRecovery() {
 }
 
 
+// true si le réveil deep sleep vient du bouton PIN_REVEIL (et pas du timer ou du PIR)
+static bool reveil_par_bouton()
+{
+  switch (esp_sleep_get_wakeup_cause())
+  {
+    case ESP_SLEEP_WAKEUP_EXT0:
+    case ESP_SLEEP_WAKEUP_GPIO:
+      return true;
+    case ESP_SLEEP_WAKEUP_EXT1:
+      return (esp_sleep_get_ext1_wakeup_status() & (1ULL << PIN_REVEIL)) != 0;
+    default:
+      return false;
+  }
+}
+
+// Mesure la durée d'appui depuis le réveil (bouton actif à l'état bas, comme debounceCallback).
+// Retourne false si le bouton est relâché (ou non appuyé) pendant STABILITE_RELACHE_MS sans être
+// rappuyé, true s'il est appuyé au bout de SEUIL_APPUI_LONG_MS.
+static bool mesure_appui_long_reveil()
+{
+  pinMode(PIN_REVEIL, INPUT_PULLUP);
+  bool relache = false;
+  uint32_t debut_relache = 0;
+  for (;;)
+  {
+    if (digitalRead(PIN_REVEIL) == LOW)
+    {
+      relache = false;  // rappuyé : le relâchement était un rebond
+    }
+    else if (!relache)
+    {
+      relache = true;
+      debut_relache = millis();
+    }
+    else if (millis() - debut_relache >= STABILITE_RELACHE_MS)
+    {
+      return false;
+    }
+
+    if (!relache && millis() + DUREE_BOOT_REVEIL_MS >= SEUIL_APPUI_LONG_MS)
+      return true;
+    delay(1);
+  }
+}
+
 void setup()
 {
   if (boot_rapide > 3) boot_rapide=0;
   if (log_detail > 4) log_detail=4;
 
   uint32_t t = millis();
-  if (boot_rapide < 2) delay(3000);
+
+  // La durée d'appui est mesurée avant tout délai de démarrage, sinon l'appui serait déjà fini
+  bool reveil_bouton_court = false;
+  appui_bouton_long = false;
+  if (reveil_par_bouton())
+  {
+    appui_bouton_long = mesure_appui_long_reveil();
+    reveil_bouton_court = !appui_bouton_long;
+  }
+
+  if ((boot_rapide < 2) && !reveil_bouton_court) delay(3000);
   //if (!boot_rapide) delay(10000);
 
 
@@ -1570,7 +1630,7 @@ void setup()
           if (log_detail>=3) Serial.println("Réveil par PIN1");
           force_stay_awake = true; // Réveil par bouton Reveil : on reste éveillé pour l'UART
           wake_up_time = millis() + prolong_veille*1000; // Prolonger si Bouton réveil est appuyé
-          if (log_detail>=3) Serial.printf("\n*** RÉVEIL PAR BOUTON : Mode configuration UART actif pour %is ***\n\r", prolong_veille);
+          if (log_detail>=3) Serial.printf("\n*** RÉVEIL PAR BOUTON : appui %s, mode configuration UART actif pour %is ***\n\r", appui_bouton_long ? "long" : "court", prolong_veille);
       }
 
       if (wakeup_pins & (1ULL << PIN_REVEIL2)) {
@@ -5681,6 +5741,12 @@ static uint8_t envoyer_data_gateway_direct(Message_Struct *mess_esp, uint8_t nod
 // appel par le sequenceur pour envoyer 1 message dans la queue.
 // appel direct pour envoyer le dernier message de la queue.
 // return : 0:parti 1a2:erreur
+// true si le réveil n'attend aucune interaction : on se rendort après l'envoi (appui bouton court inclus)
+static bool reveil_sans_interaction()
+{
+  return (type_reveil <= 3) || ((type_reveil == 4) && !appui_bouton_long);
+}
+
 uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
 {
   uint8_t result = 0;
@@ -5776,7 +5842,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
     else // plus de message à envoyer
     {
       if (log_detail >= 2)  Serial.printf("Plus de Messages dans le buffer RTC. Statut:%d Reveil:%d\n\r", My_statut&3, type_reveil);
-      if ((type_reveil <=3)  && mise_veille && ((My_statut & 3) == 1))  // reveil timer, PIR ou inconnu
+      if (reveil_sans_interaction() && mise_veille && ((My_statut & 3) == 1))  // reveil timer, PIR, inconnu ou bouton court
       {
         uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
         if (mode_rapide==12)
@@ -5788,7 +5854,7 @@ uint8_t traitement_queue_data_gateway(uint8_t mise_veille, uint8_t node)
   }
   else 
   {
-    if ((type_reveil <=3)  && mise_veille)  // reveil timer, PIR ou inconnu
+    if (reveil_sans_interaction() && mise_veille)  // reveil timer, PIR, inconnu ou bouton court
     {
       uint64_t sleep_time = (uint64_t)periode_cycle * 60 * 1000000;
       if (mode_rapide==12)

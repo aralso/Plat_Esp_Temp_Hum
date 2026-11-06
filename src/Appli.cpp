@@ -316,21 +316,20 @@ uint8_t setup_appli()
   {    
     if (type_reveil == 4)    // BTN => type_reveil=4
     {  
-      // La valeur de prolong_veille est chargée depuis la NVS plus bas dans setup().
-      // Recalculer l'échéance ici évite d'utiliser une valeur RTC obsolète.
-      wake_up_time = millis() + prolong_veille*1000;
-      delay(100);  // délai pour différencier appui court de appui long
-      uint8_t etat_BTN0 = digitalRead(BTN_PIN[0]);  // repos-pull_up => 1, appui => 0
-      if (log_detail>=1)Serial.printf("Etat BTN0: %i  type_reveil:%i\n\r", etat_BTN0, type_reveil);
-      if (!etat_BTN0)  // BTN encore appuyé
+      // appui_bouton_long est mesuré au début de setup() (>= 0,5 s depuis l'appui)
+      if (appui_bouton_long)
       {
+        // La valeur de prolong_veille est chargée depuis la NVS plus bas dans setup().
+        // Recalculer l'échéance ici évite d'utiliser une valeur RTC obsolète.
+        wake_up_time = millis() + prolong_veille*1000;
         continue_setup=1;
         My_statut = 3;
       }
-      else 
+      else
       {
         continue_setup=0;
       }
+      if (log_detail>=1) Serial.printf("Appui BTN0 %s  type_reveil:%i\n\r", appui_bouton_long ? "long" : "court", type_reveil);
     }
     else continue_setup=0;
 

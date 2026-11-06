@@ -438,6 +438,7 @@ extern  int16_t graphique[NB_Val_Graph][NB_Graphique];
 extern uint16_t Seuil_batt_arret_ESP;  // millivolt
 extern uint8_t type_reveil;  //0:pas de reveil 1: réveil par timer, 2: réveil par PIR  3:inconnu
 // 4:reveil par bouton_reveil   10:toujours actif
+extern bool appui_bouton_long;  // reveil par bouton : true si appui >= 0,5 s (reveil long), false si appui court
 
 
 extern  uint8_t etat_now;
